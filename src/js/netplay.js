@@ -12,6 +12,8 @@ const { hide, show, fadeIn, scale,
 
 const preset = require('./conf/rule.json');
 
+require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
+
 const base = location.pathname.replace(/\/[^\/]*?$/,'');
 
 let loaded;

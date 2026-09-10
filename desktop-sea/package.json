@@ -1,0 +1,16 @@
+{
+  "name": "majiang-sea",
+  "version": "2.5.3",
+  "description": "電脳麻将 - Node SEA 单文件打包（内置静态服务器，双击打开浏览器游玩）",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js ../dist",
+    "build:zip": "node build.js",
+    "build:blob": "node --experimental-sea-config sea-config.json",
+    "build:bin": "node bin.js",
+    "build": "npm run build:zip && npm run build:blob && npm run build:bin"
+  },
+  "devDependencies": {
+    "postject": "1.0.0-alpha.6"
+  }
+}

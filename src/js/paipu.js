@@ -9,6 +9,8 @@
 
 const { hide, show, fadeIn, scale   } = Majiang.UI.Util;
 
+require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
+
 $(function(){
 
     const tenhou_log = 'https://kobalab.net/majiang/tenhou-log/';

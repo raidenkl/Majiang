@@ -10,6 +10,10 @@
 const { hide, show, fadeIn, scale,
         setSelector, clearSelector  } = Majiang.UI.Util;
 
+const initYakuVoice = require('./yaku-voice-init');
+
+require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
+
 let loaded;
 
 $(function(){
@@ -17,6 +21,9 @@ $(function(){
     let game;
     const pai   = Majiang.UI.pai($('#loaddata'));
     const audio = Majiang.UI.audio($('#loaddata'));
+
+    // 初始化役种语音功能
+    initYakuVoice(audio);
 
     const analyzer = (kaiju)=>{
         $('body').addClass('analyzer');
