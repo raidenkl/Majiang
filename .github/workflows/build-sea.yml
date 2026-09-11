@@ -52,7 +52,7 @@ jobs:
           cp.execFileSync(process.execPath, ['--build-sea', 'sea-build-config.json'], { stdio: 'inherit' });
 
       # 4) 冒烟测试：
-      #    a. 轮询 HTTP 端口就绪（最多 20s，避免冷 runner 上固定 sleep 的竞态）
+      #    a. 轮询等待 sea-url.txt 出现且端口可达（最多 20s，避免冷 runner 时序竞态）
       #    b. 校验 sea-source.txt 含“SEA 内嵌资源”（server.js 同步落盘，避开 stdout 缓冲竞态）
       #       注意：CI 工作目录里 ../dist 也存在，所以仅凭 HTTP 200 无法区分是否为真 SEA 注入
       - name: Smoke test (verify SEA injection)
@@ -64,7 +64,7 @@ jobs:
           PID=$!
           ok=0
           for i in $(seq 1 20); do
-            if curl -sf http://127.0.0.1:8080/ >/dev/null || curl -sf http://127.0.0.1:8081/ >/dev/null; then
+            if [ -s sea-url.txt ] && curl -sf "$(cat sea-url.txt)" >/dev/null; then
               ok=1; break
             fi
             sleep 1
@@ -72,7 +72,7 @@ jobs:
           [ "$ok" -eq 1 ] || { echo "服务器未在 20s 内就绪:"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
           grep -q "SEA 内嵌资源" sea-source.txt \
             || { echo "非 SEA 注入(可能回退到了 dist 目录):"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
-          echo "冒烟测试通过: 资源来源 = $(cat sea-source.txt)"
+          echo "冒烟测试通过: 资源来源 = $(cat sea-source.txt), URL = $(cat sea-url.txt)"
           kill $PID 2>/dev/null || true
 
       # 5) 收集为 ASCII 名产物（最终下载名）

@@ -215,18 +215,36 @@ const start = (port) => new Promise((resolve, reject) => {
     srv.listen(port, '127.0.0.1', () => resolve(srv));
 });
 
-(async () => {
-    let url = 'http://127.0.0.1:8080/';
-    try {
-        await start(8080);
-    } catch (e) {
-        if (e.code === 'EADDRINUSE') {
-            await start(8081);
-            url = 'http://127.0.0.1:8081/';
-        } else {
-            throw e;
+// 找一个空闲端口（从 8080 起，最多试 20 个）。
+// Windows 上 8080/8081 常被别的程序占用；若只回退 8081 仍失败，旧代码会
+// process.exit(1) 立即退出——双击运行时控制台一闪而过，看起来"没有任何界面"。
+async function findFreePort() {
+    for (let port = 8080; port < 8100; port++) {
+        try {
+            const srv = await start(port);
+            return { port, srv };
+        } catch (e) {
+            if (e.code !== 'EADDRINUSE') throw e; // 非占用类错误直接抛
+            // 端口被占用，继续试下一个
         }
     }
+    throw new Error('8080-8099 端口均被占用，请关闭占用端口后重试');
+}
+
+(async () => {
+    let port, srv;
+    try {
+        ({ port, srv } = await findFreePort());
+    } catch (e) {
+        console.error('[電脳麻将] ' + e.message);
+        console.error('[電脳麻将] 若一闪而过，请在 cmd/PowerShell 里运行本程序查看错误。');
+        process.exit(1);
+    }
+    const url = `http://127.0.0.1:${port}/`;
+    // 把实际地址也写盘（sea-url.txt），方便找不到控制台窗口时打开
+    try {
+        fs.writeFileSync(path.join(process.cwd(), 'sea-url.txt'), url + '\n');
+    } catch (e) { /* 非关键 */ }
     console.log(`[電脳麻将] 本地服务器已启动: ${url}  (资源来源: ${distSource})`);
     openBrowser(url);
 })().catch(e => {
