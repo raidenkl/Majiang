@@ -34,14 +34,15 @@ jobs:
         working-directory: desktop-sea
         run: node build.js
 
-      # 3) 用 --build-sea 生成单文件可执行程序（node 写配置，正确处理平台输出名）
+      # 3) 用 --build-sea 生成单文件可执行程序
+      #    CI 里刻意用 ASCII 输出名：避免中文文件名在 Windows Git Bash / shell 步骤的编码坑
       - name: Build SEA executable
         shell: node {0}
         working-directory: desktop-sea
         run: |
           const fs = require('fs'), cp = require('child_process');
           const isWin = process.platform === 'win32';
-          const out = isWin ? '電脳麻将.exe' : '電脳麻将';
+          const out = isWin ? 'majiang-sea.exe' : 'majiang-sea';
           fs.writeFileSync('sea-build-config.json', JSON.stringify({
             main: 'server.js', output: './' + out,
             disableExperimentalSEAWarning: true,
@@ -50,7 +51,31 @@ jobs:
           }, null, 2));
           cp.execFileSync(process.execPath, ['--build-sea', 'sea-build-config.json'], { stdio: 'inherit' });
 
-      # 4) 复制成 ASCII 名，避免中文名在 artifact 的兼容问题
+      # 4) 冒烟测试：
+      #    a. 轮询 HTTP 端口就绪（最多 20s，避免冷 runner 上固定 sleep 的竞态）
+      #    b. 校验 sea-source.txt 含“SEA 内嵌资源”（server.js 同步落盘，避开 stdout 缓冲竞态）
+      #       注意：CI 工作目录里 ../dist 也存在，所以仅凭 HTTP 200 无法区分是否为真 SEA 注入
+      - name: Smoke test (verify SEA injection)
+        shell: bash
+        working-directory: desktop-sea
+        run: |
+          if [ -f majiang-sea.exe ]; then BIN=majiang-sea.exe; else BIN=majiang-sea; fi
+          "./$BIN" > smoke.log 2>&1 &
+          PID=$!
+          ok=0
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:8080/ >/dev/null || curl -sf http://127.0.0.1:8081/ >/dev/null; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          [ "$ok" -eq 1 ] || { echo "服务器未在 20s 内就绪:"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
+          grep -q "SEA 内嵌资源" sea-source.txt \
+            || { echo "非 SEA 注入(可能回退到了 dist 目录):"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
+          echo "冒烟测试通过: 资源来源 = $(cat sea-source.txt)"
+          kill $PID 2>/dev/null || true
+
+      # 5) 收集为 ASCII 名产物（最终下载名）
       - name: Collect artifact
         shell: node {0}
         working-directory: desktop-sea
@@ -58,29 +83,9 @@ jobs:
           const fs = require('fs');
           const isWin = process.platform === 'win32';
           fs.mkdirSync('../artifact', { recursive: true });
-          fs.copyFileSync(isWin ? '電脳麻将.exe' : '電脳麻将',
+          fs.copyFileSync(isWin ? 'majiang-sea.exe' : 'majiang-sea',
                           isWin ? '../artifact/Majiang-windows-x64.exe'
                                 : '../artifact/Majiang-linux-x64');
-
-      # 5) 冒烟测试：日志必须出现“资源来源: SEA 内嵌资源”（证明注入成功，否则构建判红）
-      - name: Smoke test (verify SEA injection)
-        shell: bash
-        working-directory: desktop-sea
-        run: |
-          BIN="[ -f 電脳麻将.exe ] && echo 電脳麻将.exe || echo 電脳麻将"
-          "./$(eval $BIN)" > smoke.log 2>&1 &
-          PID=$!
-          # 轮询 HTTP 就绪（最多 20 秒），替代固定 sleep 4
-          ok=0
-          for i in $(seq 1 20); do
-            curl -sf http://127.0.0.1:8080/ >/dev/null && { ok=1; break; }
-            sleep 1
-          done
-          [ $ok -eq 1 ] || { echo "服务器未在 20s 内就绪:"; cat smoke.log; exit 1; }
-          # 校验确为 SEA 注入（同步落盘的标记文件，避免 stdout 缓冲竞态）
-          grep -q "SEA 内嵌资源" sea-source.txt \
-            || { echo "非 SEA 注入(可能回退到了 dist 目录):"; cat smoke.log; exit 1; }
-          kill $PID 2>/dev/null || true
 
       # 6) 上传产物
       - uses: actions/upload-artifact@v4

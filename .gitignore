@@ -3,3 +3,4 @@ dist/js/
 dist/css/
 dist/*.html
 implementation_summary.md
+cli_failed.log

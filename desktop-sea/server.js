@@ -180,6 +180,12 @@ try {
     process.exit(1);
 }
 
+// 资源来源同步落盘（writeFileSync 一定落盘）。CI 冒烟测试靠它判断 SEA 注入是否成功：
+// console.log 在 stdout 重定向到文件时是异步缓冲的，grep 会竞态读不到，不可靠。
+try {
+    fs.writeFileSync(path.join(process.cwd(), 'sea-source.txt'), distSource + '\n');
+} catch (e) { /* 非关键路径，写不了就算了 */ }
+
 const start = (port) => new Promise((resolve, reject) => {
     const srv = createServer(root);
     srv.once('error', reject);
