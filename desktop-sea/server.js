@@ -92,26 +92,49 @@ function extractZip(zipBuf, outDir) {
  * ------------------------------------------------------------------ */
 let distSource = '本地目录';
 
+// 读取 SEA 内嵌资产。
+// 注意 API 变迁：Node 20.6–21.6 是 process.getAsset()，从 v21.7 / v20.12 起
+// 迁到 node:sea 模块（sea.isSea() / sea.getAsset() / sea.getRawAsset()）。
+// 用错 API 会静默拿不到资产、悄悄回退到「读旁边 dist 目录」——看着能跑，
+// 其实不是单文件（换台机器就起不来）。CI 冒烟测试就是为防这个。
+function readSeaAsset(key) {
+    let sea = null;
+    try { sea = require('node:sea'); } catch (e) { /* 老版本 Node 没有该模块 */ }
+
+    if (sea && typeof sea.isSea === 'function' && sea.isSea()) {
+        // 优先 getRawAsset（ArrayBuffer，不复制）；不可用则退回 getAsset（复制一份）
+        if (typeof sea.getRawAsset === 'function') {
+            return Buffer.from(sea.getRawAsset(key));
+        }
+        if (typeof sea.getAsset === 'function') {
+            return Buffer.from(sea.getAsset(key));
+        }
+    }
+    // 兼容 Node 20.6–21.6 的旧 API（新版已移除，为 undefined）
+    if (typeof process.getAsset === 'function') {
+        return process.getAsset(key);
+    }
+    return null;
+}
+
 function resolveDistDir() {
     // 1) SEA 注入资产
-    if (process.getAsset && typeof process.getAsset === 'function') {
-        try {
-            const zipBuf = process.getAsset('dist');
-            if (zipBuf && zipBuf.length) {
-                const hash = crypto.createHash('sha1').update(zipBuf).digest('hex').slice(0, 12);
-                const dir = path.join(os.tmpdir(), 'majiang-' + hash);
-                // 解压幂等：存在且非空则复用
-                if (! fs.existsSync(path.join(dir, 'index.html'))) {
-                    fs.rmSync(dir, { recursive: true, force: true });
-                    fs.mkdirSync(dir, { recursive: true });
-                    extractZip(zipBuf, dir);
-                }
-                distSource = 'SEA 内嵌资源';
-                return dir;
+    try {
+        const zipBuf = readSeaAsset('dist');
+        if (zipBuf && zipBuf.length) {
+            const hash = crypto.createHash('sha1').update(zipBuf).digest('hex').slice(0, 12);
+            const dir = path.join(os.tmpdir(), 'majiang-' + hash);
+            // 解压幂等：存在且非空则复用
+            if (! fs.existsSync(path.join(dir, 'index.html'))) {
+                fs.rmSync(dir, { recursive: true, force: true });
+                fs.mkdirSync(dir, { recursive: true });
+                extractZip(zipBuf, dir);
             }
-        } catch (e) {
-            console.warn('[majiang-sea] 资产解压失败，回退到目录模式:', e.message);
+            distSource = 'SEA 内嵌资源';
+            return dir;
         }
+    } catch (e) {
+        console.warn('[majiang-sea] 内嵌资产读取/解压失败，回退到目录模式:', e.message);
     }
     // 2) 开发模式：命令行第 2 参数或默认 ./dist
     const arg = process.argv[2] || path.join(__dirname, '..', 'dist');
