@@ -78,6 +78,43 @@ body.board
             &:focus
                 background: #999
                 outline: none
+    .lizhi-hint
+        z-index: 1
+        display: flex
+        flex-direction: column
+        justify-content: flex-end
+        align-items: flex-end
+        overflow: hidden
+        pointer-events: none
+        pai-size: 24px
+        .lizhi-hint-row
+            display: flex
+            align-items: center
+            background: rgba(0, 0, 0, 0.8)
+            border-radius: 4px
+            padding: 2px 6px
+            margin-top: 2px
+            white-space: nowrap
+            font-family: text-font
+            font-size: 14px
+            line-height: 1
+            &.selected
+                background: rgba(255, 255, 255, 0.35)
+            &.other
+                font-size: 12px
+                opacity: 0.7
+            .label
+                margin: 0 4px
+            .dapai
+                cursor: pointer
+                pointer-events: auto
+            .pai.furiten
+                opacity: 0.3
+            .n
+                margin-left: 6px
+                font-family: defen-font
+                &.zero
+                    color: #f66
     .select-mianzi
         z-index: 1
         line-height: 1

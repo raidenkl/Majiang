@@ -14,6 +14,8 @@ const preset = require('./conf/rule.json');
 
 require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
 
+require('./lizhi-patch');          // 立直の取り消しと待ち牌ヒント
+
 const base = location.pathname.replace(/\/[^\/]*?$/,'');
 
 let loaded;
