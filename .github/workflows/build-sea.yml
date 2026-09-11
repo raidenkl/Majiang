@@ -69,9 +69,18 @@ jobs:
         run: |
           BIN="[ -f 電脳麻将.exe ] && echo 電脳麻将.exe || echo 電脳麻将"
           "./$(eval $BIN)" > smoke.log 2>&1 &
-          sleep 4
-          curl -sf http://127.0.0.1:8080/ >/dev/null || curl -sf http://127.0.0.1:8081/ >/dev/null
-          grep -q "资源来源: SEA 内嵌资源" smoke.log
+          PID=$!
+          # 轮询 HTTP 就绪（最多 20 秒），替代固定 sleep 4
+          ok=0
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8080/ >/dev/null && { ok=1; break; }
+            sleep 1
+          done
+          [ $ok -eq 1 ] || { echo "服务器未在 20s 内就绪:"; cat smoke.log; exit 1; }
+          # 校验确为 SEA 注入（同步落盘的标记文件，避免 stdout 缓冲竞态）
+          grep -q "SEA 内嵌资源" sea-source.txt \
+            || { echo "非 SEA 注入(可能回退到了 dist 目录):"; cat smoke.log; exit 1; }
+          kill $PID 2>/dev/null || true
 
       # 6) 上传产物
       - uses: actions/upload-artifact@v4
