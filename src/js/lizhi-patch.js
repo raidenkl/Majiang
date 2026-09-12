@@ -236,9 +236,10 @@ if (typeof window != 'undefined' && window.Majiang && window.Majiang.UI
         clear_hint();
         if (player._lizhi_zimo) _action_zimo.apply(player, player._lizhi_zimo);
         else                    player.select_dapai();
+        show_current_hint(player);      // 取り消しても聴牌なら待ち牌を出し直す
     }
 
-    /* ---- 立直後の待ち牌を表示 ------------------------------------ */
+    /* ---- 現在の待ち牌を表示 (聴牌していれば常に出す) -------------- */
 
     function show_current_hint(player) {
         const tingpai = current_tingpai(player);
@@ -267,8 +268,8 @@ if (typeof window != 'undefined' && window.Majiang && window.Majiang.UI
             setSelector($('.button[tabindex]', this._node.button), 'button',
                         { focus: -1, touch: false });
         }
-        else if (! this.shoupai.lizhi) {
-            clear_hint();
+        else {
+            show_current_hint(this);    // 聴牌なら現在の待ちを表示
         }
     };
 
@@ -280,31 +281,26 @@ if (typeof window != 'undefined' && window.Majiang && window.Majiang.UI
     proto.action_zimo = function(zimo, gangzimo) {
         if (zimo.l == this._menfeng) this._lizhi_zimo = [ zimo, gangzimo ];
         _action_zimo.call(this, zimo, gangzimo);
-        if (zimo.l == this._menfeng && this.shoupai.lizhi) {
-            show_current_hint(this);            // 立直后每一巡都显示待ち
+        if (zimo.l == this._menfeng) {
+            show_current_hint(this);    // 自分のツモ: 聴牌ならツモ切りの待ちを表示
         }
     };
 
     proto.action_dapai = function(dapai) {
         _action_dapai.call(this, dapai);
-        if (this.shoupai.lizhi) show_current_hint(this);
-        else                    clear_hint();
+        show_current_hint(this);        // 聴牌なら常に表示、非聴牌なら消える
     };
 
-    // 自己の副露 (ポン/チー) 後、手牌が聴牌なら待ち牌を表示する
+    // 副露 (ポン/チー/槓) の後も、聴牌していれば待ち牌を表示する。
+    // 他家の副露でも、見えている枚数が変わるので表示を更新する。
     proto.action_fulou = function(fulou) {
         _action_fulou.call(this, fulou);      // 先に元の処理 (select_dapai -> clear_hint)
-        if (fulou.l == this._menfeng) {
-            show_current_hint(this);          // 聴牌でなければ自動的に消える
-        }
+        show_current_hint(this);
     };
 
-    // 自己の杠 (暗槓/加槓) 後も、手牌が聴牌なら待ち牌を表示する
     proto.action_gang = function(gang) {
         _action_gang.call(this, gang);
-        if (gang.l == this._menfeng) {
-            show_current_hint(this);
-        }
+        show_current_hint(this);
     };
 
     // 一局が終わったら消す
