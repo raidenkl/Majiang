@@ -10,7 +10,7 @@
 const { hide, show, fadeIn, scale,
         setSelector, clearSelector  } = Majiang.UI.Util;
 
-const initYakuVoice = require('./yaku-voice-init');
+const initHuleReveal = require('./hule-reveal');   // 雀魂式和牌演出：逐个显现+逐个播报
 
 require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
 
@@ -24,8 +24,8 @@ $(function(){
     const pai   = Majiang.UI.pai($('#loaddata'));
     const audio = Majiang.UI.audio($('#loaddata'));
 
-    // 初始化役种语音功能
-    initYakuVoice(audio);
+    // 初始化役种语音 + 和牌逐个显现演出
+    initHuleReveal(audio);
 
     const analyzer = (kaiju)=>{
         $('body').addClass('analyzer');

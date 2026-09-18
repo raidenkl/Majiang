@@ -8,6 +8,7 @@ module.exports = class YakuVoicePlayer {
         this._audio = audioLoader;
         this._playing = false;
         this._queue = [];
+        this._generation = 0;   // 序列代号：新序列/取消时自增，旧序列据此中止
 
         // 役种名称到语音文件的映射表
         this._yakuMap = {
@@ -103,7 +104,51 @@ module.exports = class YakuVoicePlayer {
     }
 
     /**
-     * 播放和牌的役种列表
+     * 依序执行演出步骤：显现一行 ↔ 播报一句（雀魂式）。
+     * @param {Array} steps - 每项 { voiceName, reveal }：
+     *   - reveal: 显现该步对应 DOM 行的回调（同步执行）
+     *   - voiceName: 语音 key；缺失（映射不到/音频文件没放）时只显现不播报
+     * @returns {boolean} 是否完整播完（false = 被新序列或弹窗关闭打断）
+     *
+     * generation token：新序列开始会使旧序列失效，防连续两局串音。
+     */
+    async playSteps(steps) {
+        if (! steps || steps.length === 0) return true;
+        if (this._playing) return false;
+
+        this._playing = true;
+        const gen = ++this._generation;
+
+        try {
+            for (let step of steps) {
+                if (gen !== this._generation) return false;   // 被新序列取代
+
+                if (typeof step.reveal === 'function') step.reveal();
+
+                if (step.voiceName) {
+                    await this._playVoice(step.voiceName);
+                    await this._delay(250);   // 播完后的短停顿
+                } else {
+                    await this._delay(300);   // 无语音的行也给个节奏
+                }
+            }
+            return gen === this._generation;
+        } finally {
+            if (gen === this._generation) this._playing = false;
+        }
+    }
+
+    /**
+     * 使当前正在进行的序列立即失效（弹窗被关闭/新和牌开始时调用）。
+     * 正在播的语音靠 onended/超时自然结束，不会再推进下一步。
+     */
+    cancel() {
+        this._generation++;
+        this._playing = false;
+    }
+
+    /**
+     * 播放和牌的役种列表（旧接口：无显现回调，仅排队播报）
      * @param {Array} hupai - 役种数组，每项 { name, fanshu }
      *
      * 宝牌数量取自「ドラ」/「赤ドラ」自己那几行的番数之和，
@@ -111,13 +156,10 @@ module.exports = class YakuVoicePlayer {
      */
     async playYakuList(hupai) {
         if (!hupai || hupai.length === 0) return;
-        if (this._playing) return;
-
-        this._playing = true;
-        this._queue = [];
 
         // 处理每个役种
         let doraCount = 0;
+        const queue = [];
         for (let yaku of hupai) {
             let name = yaku.name;
 
@@ -131,7 +173,7 @@ module.exports = class YakuVoicePlayer {
             let voiceName = this._getVoiceName(name);
 
             if (voiceName) {
-                this._queue.push(voiceName);
+                queue.push({ voiceName: voiceName });
             } else {
                 // 役名和映射表不一致时唯一的线索，保留
                 console.warn('[yaku-voice] 未找到映射:', JSON.stringify(name));
@@ -140,29 +182,25 @@ module.exports = class YakuVoicePlayer {
 
         // 处理宝牌
         if (doraCount > 0) {
-            this._queue.push(`yaku_dora${Math.min(doraCount, 13)}`);
+            queue.push({ voiceName: `yaku_dora${Math.min(doraCount, 13)}` });
         }
 
-        console.log('[yaku-voice] 播放队列:', this._queue.join(' → '));
-
-        // 依次播放。用 try/finally 保证 _playing 一定会被释放，
-        // 否则一次异常就会让播放器永久卡死，之后再也不出声。
-        try {
-            for (let voiceName of this._queue) {
-                await this._playVoice(voiceName);
-                await this._delay(300); // 300ms间隔
-            }
-        } finally {
-            this._playing = false;
-        }
+        console.log('[yaku-voice] 播放队列:', queue.map(s=>s.voiceName).join(' → '));
+        await this.playSteps(queue);
     }
 
     /**
-     * 获取役种对应的语音名称。役牌/連風牌 的各种写法直接写在映射表里，
-     * 不做前缀拆解 —— 拆完再拼回去得到的是同一个 key，等于没查。
+     * 获取役种对应的语音名称（公开接口，供演出模块查询）。
+     * 役牌/連風牌 的各种写法直接写在映射表里，不做前缀拆解 ——
+     * 拆完再拼回去得到的是同一个 key，等于没查。
      */
-    _getVoiceName(yakuName) {
+    getVoiceName(yakuName) {
         return this._yakuMap[yakuName] || null;
+    }
+
+    /* 内部沿用旧名 */
+    _getVoiceName(yakuName) {
+        return this.getVoiceName(yakuName);
     }
 
     /**
