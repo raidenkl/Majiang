@@ -21,6 +21,20 @@ https://kobalab.net/majiang/
 | ``build:js``    | JavaScriptのみデバッグ用にビルドする。
 | ``build:css``   | CSSのみビルドする。
 | ``build:html``  | HTMLのみビルドする。
+| ``server``      | ネット対戦サーバーを起動する。
+| ``test``        | ネット対戦サーバーのテストを実行する。
+
+## ネット対戦
+同梱のネット対戦サーバーで LAN 内やインターネット経由の対戦ができる。
+
+```sh
+npm run build     # dist/ を作成(初回のみ)
+npm run server    # http://localhost:3830/ で待ち受け
+```
+
+ブラウザで `http://<サーバー>:3830/netplay.html` を開き、
+ニックネームでログインして部屋番号を入力すれば対戦できる。
+空席は AI が補う。詳細は [server/README.md](server/README.md)。
 
 ## サブパッケージ
 以下のサブパッケージを使って構成しています。
