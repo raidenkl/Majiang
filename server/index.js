@@ -121,7 +121,30 @@ function create_app(dist_dir, opts = {}) {
     const server  = http.createServer(app);
     const io      = new Server(server, {
         path: `${BASE_PATH}/server/socket.io/`,
+        serveClient: typeof SOCKET_IO_CLIENT_SRC != 'string',
     });
+
+    /* SEA/desktop バンドルでは socket.io の serveClient が使えない
+     * (require.resolve + fs 読みが効かない)。ビルド時に埋め込んだ
+     * クライアントソースを、エンジンの request ハンドラの前段で
+     * この URL だけ先回しして配信する。 */
+    if (typeof SOCKET_IO_CLIENT_SRC == 'string') {
+        const client_path = `${BASE_PATH}/server/socket.io/socket.io.js`;
+        const delegates   = server.listeners('request').slice();
+        server.removeAllListeners('request');
+        server.on('request', (req, res)=>{
+            if (req.url.split('?')[0] == client_path) {
+                const body = Buffer.from(SOCKET_IO_CLIENT_SRC);
+                res.writeHead(200, {
+                    'Content-Type':   'application/javascript',
+                    'Content-Length': body.length,
+                });
+                res.end(body);
+                return;
+            }
+            for (const l of delegates) l.call(server, req, res);
+        });
+    }
     io.engine.use(session_middleware);
 
     const manager = new RoomManager();

@@ -38,6 +38,10 @@ jobs:
         working-directory: desktop-sea
         run: node build.js
 
+      # 2.5) 打包网络对战服务器为单文件（SEA main 脚本）
+      - name: Build netplay server bundle
+        run: npm run build:server
+
       # 3) 用 --build-sea 生成单文件可执行程序
       #    CI 里刻意用 ASCII 输出名：避免中文文件名在 Windows Git Bash / shell 步骤的编码坑
       - name: Build SEA executable
@@ -48,7 +52,7 @@ jobs:
           const isWin = process.platform === 'win32';
           const out = isWin ? 'majiang-sea.exe' : 'majiang-sea';
           fs.writeFileSync('sea-build-config.json', JSON.stringify({
-            main: 'server.js', output: './' + out,
+            main: 'server-bundle.cjs', output: './' + out,
             disableExperimentalSEAWarning: true,
             useCodeCache: false, useSnapshot: false,
             assets: { dist: 'dist.zip' }
@@ -76,6 +80,9 @@ jobs:
           [ "$ok" -eq 1 ] || { echo "服务器未在 20s 内就绪:"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
           grep -q "SEA 内嵌资源" sea-source.txt \
             || { echo "非 SEA 注入(可能回退到了 dist 目录):"; cat smoke.log; kill $PID 2>/dev/null; exit 1; }
+          # 内嵌的是完整对战服务器:验证 /local/lan 接口可用
+          curl -sf "$(cat sea-url.txt)local/lan" | grep -q '"enabled"' \
+            || { echo "内嵌对战服务器异常(/local/lan 不可用):"; kill $PID 2>/dev/null; exit 1; }
           echo "冒烟测试通过: 资源来源 = $(cat sea-source.txt), URL = $(cat sea-url.txt)"
           kill $PID 2>/dev/null || true
 
