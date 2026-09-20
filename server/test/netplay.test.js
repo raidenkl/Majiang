@@ -115,6 +115,24 @@ function auto_reply(sock) {
     });
 }
 
+/* 空応答しつつ、クライアント(src/js/netplay.js)と同じ失步判定を再現するボット。
+ * 「自分の席に届く seq が 1,2,3… と連番か」を検証するために使う。 */
+function auto_reply_track(sock, out = { seqs: [], mismatch: [], expect: 0,
+                                        kaiju: null }) {
+    sock.on('GAME', msg=>{
+        if (! msg) return;
+        if (msg.kaiju) out.kaiju = msg.kaiju;
+        if (msg.qipai) out.qipai = msg.qipai;
+        if (! msg.seq) return;
+        out.seqs.push(msg.seq);
+        if (out.expect && msg.seq != out.expect)
+            out.mismatch.push({ expect: out.expect, got: msg.seq });
+        out.expect = msg.seq + 1;
+        send(sock, 'GAME', { seq: msg.seq });
+    });
+    return out;
+}
+
 async function close(sock) {
     if (sock.disconnected) return;
     await new Promise(resolve=>{ sock.on('disconnect', resolve);
@@ -140,6 +158,68 @@ test('ログインと HELLO', async ()=>{
                                 reconnection: false });
         assert.equal(await wait_hello(sock), null, '未ログインは null');
         sock.disconnect();
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
+test('名前変更と、空 body の認証 POST の拒否', async ()=>{
+
+    const { server } = await start_server();
+    try {
+        const base = base_url(server);
+
+        /* ログイン(名前A) */
+        const a = await connect(base, '名前A');
+
+        /* 同じセッション cookie で name だけ変える → uid は維持される */
+        const res = await fetch(`${base}/server/auth/`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded',
+                       Cookie: a.cookie },
+            body:    'name=名前B&to=netplay.html',
+            redirect: 'manual',
+        });
+        assert.equal(res.status, 302, '名前変更は 302');
+        const renamed = await reconnect_same_session(base, a.cookie);
+        assert.equal(renamed.uid,  a.uid, 'uid は維持される');
+        assert.equal(renamed.name, '名前B', '名前が変わる');
+        await close(renamed.sock);
+
+        /* 空 body の POST(クライアントの認証方式探测)は 400 で拒否され、
+         * 名前も uid も上書きされない */
+        const probe = await fetch(`${base}/server/auth/`, {
+            method: 'POST',
+            headers: { Cookie: a.cookie },
+            redirect: 'manual',
+        });
+        assert.equal(probe.status, 400, '空 body の POST は 400');
+        const after = await reconnect_same_session(base, a.cookie);
+        assert.equal(after.name, '名前B', '名前は上書きされない');
+        assert.equal(after.uid,  a.uid,    'uid も変わらない');
+        await close(after.sock);
+
+        /* 未ログインの端末が探测 POST しても「ななし」ログインにならない */
+        const probe2 = await fetch(`${base}/server/auth/`, {
+            method: 'POST',
+            redirect: 'manual',
+        });
+        assert.equal(probe2.status, 400);
+        const cookie2 = (probe2.headers.get('set-cookie') || '').split(';')[0];
+        const sock2 = io(base, { path: '/server/socket.io/',
+                                 extraHeaders: { Cookie: cookie2 },
+                                 transports: [ 'websocket' ],
+                                 reconnection: false });
+        assert.equal(await wait_hello(sock2), null,
+                     '空 body POST では自動ログインしない');
+        sock2.disconnect();
+
+        await close(a.sock);
     }
     finally {
         server.closeAllConnections?.();
@@ -326,6 +406,77 @@ test('1人 + AI 3人で一局完走', { timeout: 300 * 1000 }, async ()=>{
     }
 });
 
+test('人間2人 + AI2人で一局完走(seq は席ごとの連番)', { timeout: 300 * 1000 }, async ()=>{
+
+    const { server } = await start_server();
+    try {
+        const base = base_url(server);
+        const a    = await connect(base, 'A');
+        const b    = await connect(base, 'B');
+        const ta   = auto_reply_track(a.sock);
+        const tb   = auto_reply_track(b.sock);
+
+        /* A が部屋を作成し、B が入室 */
+        const p_a1 = wait_event(a.sock, 'ROOM');
+        send(a.sock, 'ROOM', 'two-humans');
+        await p_a1;
+
+        const p_a2 = wait_event(a.sock, 'ROOM', m => m.user.length == 2);
+        const p_b2 = wait_event(b.sock, 'ROOM', m => m.user.length == 2);
+        send(b.sock, 'ROOM', 'two-humans');
+        await Promise.all([ p_a2, p_b2 ]);
+
+        /* 一局戦 + 連荘なし:1 局で必ず終わる */
+        const rule      = Majiang.rule({ '場数': 0, '連荘方式': 0 });
+        const p_a_start = wait_event(a.sock, 'START');
+        const p_b_start = wait_event(b.sock, 'START');
+        const p_a_end   = wait_event(a.sock, 'END');
+        const p_b_end   = wait_event(b.sock, 'END');
+        send(a.sock, 'START', 'two-humans', rule, [ 5 ]);
+
+        await Promise.all([ p_a_start, p_b_start ]);
+        await Promise.all([ p_a_end,   p_b_end   ]);
+
+        /* 2 人は別々の席に座る */
+        assert.ok(ta.kaiju && tb.kaiju, '開局メッセージが届く');
+        assert.notEqual(ta.kaiju.id, tb.kaiju.id, '2 人は別の席');
+        assert.deepEqual(ta.kaiju.player, [ 'A', 'B', 'CPU', 'CPU' ],
+                         '対局者名が反映される');
+
+        /* 各席に届く seq は 1 から連番であること。
+         * 対局全体で共有する単一カウンタにすると人間 2 人で必ず失步し、
+         * クライアントが location.reload() を繰り返して対局が進まなくなる。 */
+        for (const [name, t] of [ [ 'A', ta ], [ 'B', tb ] ]) {
+            assert.ok(t.seqs.length > 10,
+                      `${name}: 十分な数の seq メッセージ (${t.seqs.length})`);
+            assert.deepEqual(t.mismatch, [], `${name}: 失步しない`);
+            assert.deepEqual(t.seqs, t.seqs.map((_, i)=>i + 1),
+                             `${name}: seq は 1 から連番`);
+        }
+
+        /* 自分の手牌は自分の席にしか見えない(2 人は別々の席を見る) */
+        const seat_of = (name, t)=>{
+            assert.ok(t.qipai, `${name}: 開局(手牌)メッセージがある`);
+            const visible = t.qipai.shoupai.map((s, i)=>[ s, i ])
+                                           .filter(([ s ])=>0 < s.length);
+            assert.equal(visible.length, 1, `${name}: 手牌が見えるのは 1 席だけ`);
+            return visible[0][1];
+        };
+        assert.notEqual(seat_of('A', ta), seat_of('B', tb),
+                        '2 人は別の席の手牌を見る');
+
+        await close(a.sock);
+        await close(b.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
 test('対局中の切断・再接続', { timeout: 120 * 1000 }, async ()=>{
 
     const { server } = await start_server();
@@ -416,6 +567,7 @@ test('局域网联机开关・ログアウト・ログイン回跳', async ()=>{
         let state = await res.json();
         assert.equal(state.enabled, false);
         assert.equal(state.url, null);
+        assert.equal(state.local, true, 'ローカルからは操作可能と分かる');
         assert.equal(server.address().address, '127.0.0.1');
 
         /* ON に切替 → 0.0.0.0 で待ち受け、招待 URL がもらえる */

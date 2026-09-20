@@ -5,3 +5,4 @@ dist/*.html
 implementation_summary.md
 cli_failed.log
 .npm-cache/
+.workbuddy/

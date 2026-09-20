@@ -13,7 +13,10 @@
  *
  *  保留与旧版 server.js 相同的外部约定:
  *    - 端口从 8080 起寻找空闲端口
- *    - sea-source.txt / sea-url.txt 落盘(CI 冒烟测试依赖)
+ *    - ステータスファイル(sea-source.txt / sea-url.txt)は
+ *      MAJIANG_WRITE_STATUS=1 のときだけカレントディレクトリへ落とす
+ *      (CI 冒烟テスト用。既定で書くと、ダブルクリック起動時に
+ *       実行ファイルの隣へ見慣れない txt が増えてしまうため)
  *    - 自动打开系统默认浏览器
  */
 "use strict";
@@ -100,11 +103,29 @@ try {
     process.exit(1);
 }
 
-// 资源来源同步落盘。CI 冒烟测试靠它判断 SEA 注入是否成功
-// （console.log 在 stdout 重定向到文件时是异步缓冲的，grep 会竞态读不到）
-try {
-    fs.writeFileSync(path.join(process.cwd(), 'sea-source.txt'), distSource + '\n');
-} catch (e) { /* 非关键路径 */ }
+/* ------------------------------------------------------------------ *
+ * ステータスファイル(CI 用)
+ *
+ * 既定では「何も書かない」。ダブルクリック起動だと cwd は exe のある
+ * フォルダになるため、実行ファイルの隣に見慣れない txt が増えてしまう。
+ * MAJIANG_WRITE_STATUS を真にして起動したときだけ、カレントディレクトリへ
+ * sea-source.txt / sea-url.txt を落とす:
+ *     MAJIANG_WRITE_STATUS=1 ./majiang-sea
+ * CI の冒烟テストはこれで「SEA 内嵌资源が本当に使われたか」を判定する
+ * (console.log は stdout をファイルへリダイレクトすると非同期バッファに
+ *  なるため、grep が競態で読めないことがある)。
+ * ------------------------------------------------------------------ */
+const WRITE_STATUS = /^(1|true|yes|on)$/i
+                        .test(process.env.MAJIANG_WRITE_STATUS || '');
+
+function write_status(name, text) {
+    if (! WRITE_STATUS) return;
+    try {
+        fs.writeFileSync(path.join(process.cwd(), name), text + '\n');
+    } catch (e) { /* 非关键路径 */ }
+}
+
+write_status('sea-source.txt', distSource);
 
 /* 桌面版默认局域网联机 OFF(127.0.0.1),页面上用按钮开启 */
 const lan_default = process.env.LAN_DEFAULT == null
@@ -140,10 +161,7 @@ async function findFreePort() {
     listen_host.last = '127.0.0.1';
 
     const url = `http://127.0.0.1:${port}/`;
-    // 把实际地址也写盘（sea-url.txt），方便找不到控制台窗口时打开
-    try {
-        fs.writeFileSync(path.join(process.cwd(), 'sea-url.txt'), url + '\n');
-    } catch (e) { /* 非关键 */ }
+    write_status('sea-url.txt', url);      // MAJIANG_WRITE_STATUS 指定時のみ
     console.log(`[電脳麻将] 本地服务器已启动: ${url}  (资源来源: ${distSource})`);
     console.log('[電脳麻将] 局域网联机: OFF(网页「ネット対戦 → 局域网联机」按钮可开启)');
     openBrowser(url);

@@ -61,14 +61,16 @@ jobs:
 
       # 4) 冒烟测试：
       #    a. 轮询等待 sea-url.txt 出现且端口可达（最多 20s，避免冷 runner 时序竞态）
-      #    b. 校验 sea-source.txt 含“SEA 内嵌资源”（server.js 同步落盘，避开 stdout 缓冲竞态）
+      #    b. 校验 sea-source.txt 含“SEA 内嵌资源”
       #       注意：CI 工作目录里 ../dist 也存在，所以仅凭 HTTP 200 无法区分是否为真 SEA 注入
+      #    这两个 txt 现在是 opt-in：只有 MAJIANG_WRITE_STATUS=1 时才会落盘
+      #    （默认不写，免得用户双击 exe 时旁边多出两个文件）
       - name: Smoke test (verify SEA injection)
         shell: bash
         working-directory: desktop-sea
         run: |
           if [ -f majiang-sea.exe ]; then BIN=majiang-sea.exe; else BIN=majiang-sea; fi
-          "./$BIN" > smoke.log 2>&1 &
+          MAJIANG_WRITE_STATUS=1 "./$BIN" > smoke.log 2>&1 &
           PID=$!
           ok=0
           for i in $(seq 1 20); do

@@ -11,7 +11,7 @@
     "release": "npm run build:html && npm run build:css && webpack --mode production",
     "server": "node server/index.js",
     "build:server": "webpack --config webpack.server.js",
-    "test": "node --test server/test/",
+    "test": "node --test \"server/test/*.test.js\"",
     "clean": "rm -f dist/*.html dist/js/* dist/css/*"
   },
   "repository": {

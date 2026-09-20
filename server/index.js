@@ -92,8 +92,27 @@ function create_app(dist_dir, opts = {}) {
         return REDIRECT_PAGES.includes(to) ? to : def;
     }
 
-    /* ゲストログイン。ニックネームだけで入れる(passwd は無視) */
+    /* ローカル(この端末)からのアクセスか */
+    function is_local(req) {
+        const peer = req.socket.remoteAddress || '';
+        return /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(peer);
+    }
+
+    /*
+     *  ゲストログイン / 名前変更。ニックネームだけで入れる(passwd は無視)。
+     *
+     *  name フィールドが無い POST は受け付けない。クライアント側の認証方式
+     *  探测(空 body の POST)や第三者からの空リクエストが「ななし」ログイン
+     *  として通ってしまい、毎回ページを読み込むたびに名前を上書きして
+     *  「改名が効かない」状態になるため。
+     *  既にログイン済みなら uid は維持する(＝改名)。
+     */
     app.post('/server/auth/', (req, res)=>{
+
+        if (! req.body || req.body.name === undefined) {
+            return res.status(400).json({ error: 'name が必要です' });
+        }
+
         let name = String(req.body.name || '').trim()
                        .replace(/[\u0000-\u001f\u007f]/g, '')
                        .slice(0, NAME_MAX_LEN);
@@ -159,6 +178,11 @@ function create_app(dist_dir, opts = {}) {
     /*
      * 待ち受けアドレスの切り替え。同じポートのまま
      * close → listen する(session / io インスタンスは維持される)。
+     *
+     * server.close() のコールバックは、アップグレード済みの WebSocket が
+     * 接続として残るため発火しない(実測)。よって短い兜底タイマーで
+     * listen し直す。実測:150ms で切替完了し、切替前に張られていた
+     * socket.io 接続も切れない(クライアントの再接続は不要)。
      */
     function listen_host(host, cb = ()=>{}) {
 
@@ -176,19 +200,23 @@ function create_app(dist_dir, opts = {}) {
             server.listen({ port: addr.port, host: host }, cb);
         };
         server.close(relisten);
-        setTimeout(relisten, 1000).unref?.();   // 念のための保険
+        setTimeout(relisten, 150).unref?.();    // WebSocket が残ると close 回调は発火しない
     }
 
-    /* 局域网開放の状態照会 */
+    /* 局域网開放の状態(GET/POST 共通のペイロード) */
+    function lan_state(req) {
+        return { enabled: lan.enabled, url: lan_url(), local: is_local(req) };
+    }
+
+    /* 局域网開放の状態照会。local はこの端末から操作できるか */
     app.get('/local/lan', (req, res)=>{
-        res.json({ enabled: lan.enabled, url: lan_url() });
+        res.json(lan_state(req));
     });
 
     /* 局域网開放の切替(ローカルからのみ)。再バインド完了後に応答する */
     app.post('/local/lan', async (req, res)=>{
 
-        const peer = req.socket.remoteAddress || '';
-        if (! /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(peer)) {
+        if (! is_local(req)) {
             return res.status(403).json(
                         { error: 'ローカルからのみ操作できます' });
         }
@@ -202,11 +230,11 @@ function create_app(dist_dir, opts = {}) {
             lan.enabled = enable;
             const host = enable ? '0.0.0.0' : '127.0.0.1';
             /* 切替はこの応答を流し切ってから(自分の接続を切らない) */
-            res.json({ enabled: lan.enabled, url: lan_url() });
+            res.json(lan_state(req));
             setTimeout(()=>listen_host(host), 200);
             return;
         }
-        res.json({ enabled: lan.enabled, url: lan_url() });
+        res.json(lan_state(req));
     });
 
     io.on('connection', (sock)=>{

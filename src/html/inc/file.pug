@@ -17,6 +17,10 @@
       .netplay
         img(src="img/icon.png" title="guest")
         span.name
+        form.rename(method="POST" action="server/auth/")
+          input(name="name" maxlength="20" placeholder="新しい名前" required)
+          input(name="to" value="netplay.html" type="hidden")
+          input(type="submit" value="名前変更")
         form.room
           input(name="room_no" placeholder="ルーム")
           input(type="submit" value="入室")

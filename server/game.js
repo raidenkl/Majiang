@@ -43,6 +43,11 @@ function sanitize_reply(reply) {
  *  人間の席。Majiang.Game の player として振る舞い、
  *  メッセージを保有する User の全 socket に転送し、
  *  応答(または持ち時間切れ)をエンジンへ返す。
+ *
+ *  応答通番 seq は「席ごとの連番」(1,2,3…)。
+ *  クライアント(src/js/netplay.js)は自分の席に届く seq が連続していることを
+ *  前提に失步判定(location.reload())を行うため、対局全体で共有する
+ *  カウンタにしてはいけない(人間が 2 人以上いると必ず判定に引っかかる)。
  */
 class NetPlayer {
 
@@ -51,6 +56,7 @@ class NetPlayer {
         this.id      = id;          // player id (0-3)
         this.user    = user;        // 席の主(全 socket に転送する)
         this.pending = null;        // { seq, msg, callback, timer }
+        this.seq     = 0;           // この席の応答通番
     }
 
     get online() { return this.user.online }
@@ -63,7 +69,7 @@ class NetPlayer {
             return;
         }
 
-        const seq     = ++ this.session.seq;
+        const seq     = ++ this.seq;
         this.pending  = {
             seq:      seq,
             msg:      msg,
@@ -128,7 +134,6 @@ class GameSession {
                          ? timer[0] : DEFAULT_LIMIT;
         this.limit_ms    = limit * 1000;
         this.timer_field = [ limit, 0 ];
-        this.seq         = 0;       // 対局内で単調増加する応答通番
         this.players     = [];      // player id -> NetPlayer | AI
         this.game        = null;
         this.finished    = false;

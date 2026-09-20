@@ -50,7 +50,7 @@ $(function(){
 
     /* ---- 局域网联机屏(#lanmode) ---- */
 
-    let lan_state = null;       // { enabled, url } / null はサーバー不可
+    let lan_state = null;       // { enabled, url, local } / null はサーバー不可
 
     function update_lan(state) {
 
@@ -58,6 +58,9 @@ $(function(){
         const toggle = $('#lanmode .lan-toggle');
         const state_p = $('#lanmode .state');
         const invite = $('#lanmode .invite');
+        const err    = $('#lanmode .error');
+
+        err.addClass('hide').text('');
 
         if (! state) {          // 対戦サーバーが見つからない
             toggle.addClass('hide');
@@ -65,14 +68,27 @@ $(function(){
             invite.text('');
             return;
         }
-        toggle.removeClass('hide');
-        toggle.toggleClass('on', state.enabled);
+
+        /* ゲスト端末(local=false)は待ち受けアドレスを切り替えられない */
+        const is_local = state.local !== false;
+        toggle.toggleClass('hide', ! is_local);
+        toggle.toggleClass('on', !! state.enabled);
         toggle.text(state.enabled ? '局域网联机:ON'
                                   : '局域网联机:OFF');
-        state_p.text(state.enabled
+        state_p.text(! is_local
+                    ? 'この端末は招待リンクから参加しています'
+                      + '(联机の切替はホスト側で行います)'
+                    : state.enabled
                     ? 'ON:同じ LAN 内のデバイスが招待 URL で参加できます'
                     : 'OFF:この端末からだけアクセスできます');
         invite.text(state.url ? `邀请链接 ${state.url}` : '');
+    }
+
+    /* 切替に失敗したときの表示(例:部屋・対局中は 409 で拒否される) */
+    function update_lan_error(msg) {
+        const err = $('#lanmode .error');
+        err.removeClass('hide')
+           .text(msg || '切り替えできませんでした');
     }
 
     function show_lanmode() {
@@ -106,8 +122,8 @@ $(function(){
 
         sock = io('/', { path: `${base}/server/socket.io/`});
 
-        $(window).on('pagehide', ()=>sock.disconnect());
-        $(window).on('pageshow', ()=>sock.connect());
+        $(window).on('pagehide', ()=>{ if (sock) sock.disconnect() });
+        $(window).on('pageshow', ()=>{ if (sock) sock.connect() });
 
         sock.on('HELLO', hello);
         sock.on('ROOM', room);
@@ -123,8 +139,15 @@ $(function(){
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ enabled: enable }),
                 })
-                .then(res=>res.json())
-                .then(state=>update_lan(state))
+                .then(async (res)=>{
+                    let state = {};
+                    try { state = await res.json() } catch (e) { /* 本文なし */ }
+                    if (! res.ok) {         // 409:部屋/対局中など
+                        update_lan_error(state.error);
+                        return;
+                    }
+                    update_lan(state);
+                })
                 .catch(()=>update_lan(null));
             return false;
         });
@@ -142,6 +165,8 @@ $(function(){
                 $('#file .netplay img').attr('src', user.icon)
                                        .attr('title', user.uid);
             $('#file .netplay .name').text(user.name);
+            $('#file .netplay form.rename input[name="name"]')
+                .attr('placeholder', user.name);
             file.redraw();
         }
         else {
@@ -279,12 +304,16 @@ $(function(){
     $(window).on('load', ()=>setTimeout(init, 500));
     if (loaded) $(window).trigger('load');
 
-    $('#title .login form').each(function(){
-        let method = $(this).attr('method')
-        let url    = $(this).attr('action');
-        fetch(url, { method: method, redirect: 'manual' }).then(res =>{
-            if (res.status == 404) hide($(this));
-        });
+    /* 未実装の外部認証(Hatena / Google)だけを探测してボタンを隠す。
+     *  - ローカル登録(server/auth/)は自分たちのサーバーが必ず実装しているので
+     *    探测しない(GET だと 404 で消えてしまう)。
+     *  - 探测は GET で行う。以前はフォームの method(POST)で空 body を投げていたが、
+     *    サーバー側で「名前なしログイン(ななし)」として扱われ、毎回ページを
+     *    読み込むたびにセッションの名前を上書きしてしまっていた。 */
+    $('#title .login form').not('.local').each(function(){
+        fetch($(this).attr('action'), { method: 'GET', redirect: 'manual' })
+            .then(res =>{ if (res.status == 404) hide($(this)) })
+            .catch(()=>{});
     });
 });
 $(window).on('load', ()=> loaded = true);
