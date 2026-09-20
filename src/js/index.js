@@ -93,6 +93,7 @@ $(function(){
                 });
             show(setSelector($('#title .start'), 'title',
                             { focus: null, touch: false }));
+            show($('#title .netstart'));
         });
         if (loaded) $(window).trigger('load');
     }, 1000);

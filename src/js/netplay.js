@@ -48,6 +48,60 @@ $(function(){
                                             viewer, stat);
     let sock, myuid;
 
+    /* ---- 局域网联机屏(#lanmode) ---- */
+
+    let lan_state = null;       // { enabled, url } / null はサーバー不可
+
+    function update_lan(state) {
+
+        lan_state = state;
+        const toggle = $('#lanmode .lan-toggle');
+        const state_p = $('#lanmode .state');
+        const invite = $('#lanmode .invite');
+
+        if (! state) {          // 対戦サーバーが見つからない
+            toggle.addClass('hide');
+            state_p.text('対戦サーバーに接続できません');
+            invite.text('');
+            return;
+        }
+        toggle.removeClass('hide');
+        toggle.toggleClass('on', state.enabled);
+        toggle.text(state.enabled ? '局域网联机:ON'
+                                  : '局域网联机:OFF');
+        state_p.text(state.enabled
+                    ? 'ON:同じ LAN 内のデバイスが招待 URL で参加できます'
+                    : 'OFF:この端末からだけアクセスできます');
+        invite.text(state.url ? `邀请链接 ${state.url}` : '');
+    }
+
+    function show_lanmode() {
+        fetch(`${base}local/lan`).then(res=>res.json())
+            .then(state=>update_lan(state))
+            .catch(()=>update_lan(null));
+        fadeIn($('body').attr('class','lanmode'));
+    }
+
+    function lan_confirmed() {
+        try { return sessionStorage.getItem('Majiang.lan') }
+        catch (e) { return null }
+    }
+
+    /* 「対戦へ進む」:認証状態に応じて牌譜/入室画面かログイン画面へ */
+    function proceed() {
+
+        try { sessionStorage.setItem('Majiang.lan', '1') } catch (e) {}
+
+        if (myuid) {
+            fadeIn($('body').attr('class','file'));
+            file.redraw();
+        }
+        else {
+            $('body').attr('class','title');
+            show($('#title .login'));
+        }
+    }
+
     function init() {
 
         sock = io('/', { path: `${base}/server/socket.io/`});
@@ -62,23 +116,39 @@ $(function(){
         sock.on('ERROR', file.error);
         sock.on('disconnect', ()=>hide($('#file .netplay form.room')));
 
+        $('#lanmode .lan-toggle').on('click', ()=>{
+            const enable = ! (lan_state && lan_state.enabled);
+            fetch(`${base}local/lan`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ enabled: enable }),
+                })
+                .then(res=>res.json())
+                .then(state=>update_lan(state))
+                .catch(()=>update_lan(null));
+            return false;
+        });
+        $('#lanmode .proceed').on('click', proceed);
+
         hide($('#title .loading'));
+        show_lanmode();
     }
 
     function hello(user) {
-        if (! user) {
-            $('body').attr('class','title');
-            show($('#title .login'));
-            return;
+        if (user) {
+            myuid = user.uid;
+            show($('#file .netplay form'));
+            if (user.icon)
+                $('#file .netplay img').attr('src', user.icon)
+                                       .attr('title', user.uid);
+            $('#file .netplay .name').text(user.name);
+            file.redraw();
         }
-        myuid = user.uid;
-        show($('#file .netplay form'));
-        fadeIn($('body').attr('class','file'));
-        if (user.icon)
-            $('#file .netplay img').attr('src', user.icon)
-                                   .attr('title', user.uid);
-        $('#file .netplay .name').text(user.name);
-        file.redraw();
+        else {
+            myuid = null;
+        }
+        /* LAN 確認済みなら LAN 屏を飛ばして進む */
+        if (lan_confirmed()) proceed();
     }
 
     let row, src;

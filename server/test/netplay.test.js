@@ -19,13 +19,27 @@ const TIMEOUT_MS = 180 * 1000;      // AI 対局の完走待ち
 
 /* ---- テスト用ユーティリティ ---- */
 
-function start_server() {
-    const { server } = create_app(null);    // 静的ファイルは不要
-    return new Promise(resolve => server.listen(0, ()=>resolve(server)));
+function start_server(opts) {
+    const app = create_app(null, opts);     // 静的ファイルは不要
+    const host = app.lan.enabled ? '0.0.0.0' : '127.0.0.1';
+    return new Promise(resolve =>
+        app.server.listen({ port: 0, host }, ()=>resolve(app)));
 }
 
 function base_url(server) {
     return `http://127.0.0.1:${server.address().port}`;
+}
+
+/* 待ち受けアドレスの切替(200ms 遅延)完了を待つ */
+async function wait_address(server, address, ms = 3000) {
+    const t0 = Date.now();
+    for (;;) {
+        const addr = server.address();
+        if (addr && addr.address == address) return;
+        if (Date.now() - t0 > ms) break;
+        await new Promise(r=>setTimeout(r, 50));
+    }
+    assert.fail(`address が ${address} になりません`);
 }
 
 function wait_hello(sock, ms = 5000) {
@@ -111,7 +125,7 @@ async function close(sock) {
 
 test('ログインと HELLO', async ()=>{
 
-    const server = await start_server();
+    const { server } = await start_server();
     try {
         const base = base_url(server);
 
@@ -138,7 +152,7 @@ test('ログインと HELLO', async ()=>{
 
 test('部屋の作成・入室・満員・退室', async ()=>{
 
-    const server = await start_server();
+    const { server } = await start_server();
     try {
         const base   = base_url(server);
         const a      = await connect(base, 'A');
@@ -208,7 +222,7 @@ test('部屋の作成・入室・満員・退室', async ()=>{
 
 test('部屋の主以外は対局を開始できない', async ()=>{
 
-    const server = await start_server();
+    const { server } = await start_server();
     try {
         const base = base_url(server);
         const a = await connect(base, 'A');
@@ -238,7 +252,7 @@ test('部屋の主以外は対局を開始できない', async ()=>{
 
 test('1人 + AI 3人で一局完走', { timeout: 300 * 1000 }, async ()=>{
 
-    const server = await start_server();
+    const { server } = await start_server();
     try {
         const base = base_url(server);
         const a    = await connect(base, 'solo');
@@ -314,7 +328,7 @@ test('1人 + AI 3人で一局完走', { timeout: 300 * 1000 }, async ()=>{
 
 test('対局中の切断・再接続', { timeout: 120 * 1000 }, async ()=>{
 
-    const server = await start_server();
+    const { server } = await start_server();
     try {
         const base = base_url(server);
         const a    = await connect(base, 'reconnect');
@@ -379,6 +393,102 @@ test('対局中の切断・再接続', { timeout: 120 * 1000 }, async ()=>{
             check();
         });
 
+        await close(b.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
+test('局域网联机开关・ログアウト・ログイン回跳', async ()=>{
+
+    const app = await start_server({ lan_default: false });
+    const { server } = app;
+    try {
+        const base = base_url(server);
+
+        /* 既定は OFF */
+        let res = await fetch(`${base}/local/lan`);
+        let state = await res.json();
+        assert.equal(state.enabled, false);
+        assert.equal(state.url, null);
+        assert.equal(server.address().address, '127.0.0.1');
+
+        /* ON に切替 → 0.0.0.0 で待ち受け、招待 URL がもらえる */
+        res = await fetch(`${base}/local/lan`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: true }),
+        });
+        state = await res.json();
+        assert.equal(state.enabled, true);
+        assert.match(state.url,
+                     /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+\//);
+        await wait_address(server, '0.0.0.0');
+
+        /* GET でも状態を確認できる */
+        assert.deepEqual(await (await fetch(`${base}/local/lan`)).json(),
+                         state);
+
+        /* 部屋が有効な間は OFF にできない(409) */
+        const a = await connect(base, 'A');
+        send(a.sock, 'ROOM', 'lan-room');
+        await wait_event(a.sock, 'ROOM');
+        res = await fetch(`${base}/local/lan`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+        });
+        assert.equal(res.status, 409);
+        await close(a.sock);
+
+        /* 全員離席後は OFF に戻せる */
+        res = await fetch(`${base}/local/lan`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+        });
+        state = await res.json();
+        assert.equal(state.enabled, false);
+        assert.equal(state.url, null);
+        await wait_address(server, '127.0.0.1');
+
+        /* ログインの戻り先:to=netplay.html(既定) */
+        res = await fetch(`${base}/server/auth/`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'name=X&passwd=*',
+            redirect: 'manual',
+        });
+        assert.match(res.headers.get('location'), /\/netplay\.html$/);
+
+        /* to=index.html なら ?netplay=1 付き */
+        res = await fetch(`${base}/server/auth/`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'name=X&passwd=*&to=index.html',
+            redirect: 'manual',
+        });
+        assert.match(res.headers.get('location'),
+                     /\/index\.html\?netplay=1$/);
+
+        /* logout すると同一 cookie の再接続で HELLO が null になる */
+        const b = await connect(base, 'B');
+        res = await fetch(`${base}/server/logout`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded',
+                       Cookie: b.cookie },
+            body: 'to=netplay.html',
+            redirect: 'manual',
+        });
+        assert.match(res.headers.get('location'), /\/netplay\.html$/);
+        const c = await reconnect_same_session(base, b.cookie);
+        assert.equal(c.uid, null, 'ログアウト後は HELLO null');
+        await close(c.sock);
         await close(b.sock);
     }
     finally {

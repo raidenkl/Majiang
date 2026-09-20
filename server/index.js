@@ -8,6 +8,9 @@
  *    PORT           リッスン番号(既定 3830)
  *    BASE_PATH      サブパスで運用するときの接頭辞(既定なし)
  *    SESSION_SECRET セッション署名鍵(既定は起動時に乱数生成)
+ *    LAN_DEFAULT    起動直後の局域网開放(1/0、既定 1)。
+ *                   桌面版(内蔵サーバー)は 0 で起動し、ページの
+ *                   「局域网联机」ボタンで開放する。
  *
  *  起動: npm run server
  */
@@ -15,13 +18,14 @@
 
 const path     = require('path');
 const crypto   = require('crypto');
+const os       = require('os');
 const http     = require('http');
 const express  = require('express');
 const session  = require('express-session');
 const { Server } = require('socket.io');
 const Majiang  = require('@kobalab/majiang-core');
 
-const { RoomManager, valid_room_no } = require('./room');
+const { RoomManager } = require('./room');
 
 const PORT          = process.env.PORT || 3830;
 const BASE_PATH     = ('/' + (process.env.BASE_PATH || ''))
@@ -29,6 +33,9 @@ const BASE_PATH     = ('/' + (process.env.BASE_PATH || ''))
 const SESSION_SECRET = process.env.SESSION_SECRET
                       || crypto.randomBytes(48).toString('hex');
 const NAME_MAX_LEN   = 20;
+
+/* ログイン/ログアウト後の戻り先として認めるページ */
+const REDIRECT_PAGES = ['index.html', 'netplay.html'];
 
 /* クライアントから渡されるルール/持ち時間を安全な形に正規化する */
 function normalize_rule(rule) {
@@ -43,7 +50,22 @@ function normalize_timer(timer) {
     return timer.map(Number).filter(Number.isFinite).slice(0, 4);
 }
 
-function create_app(dist_dir) {
+/* 局域网への公開に使える IPv4 アドレス(なければ null) */
+function lan_ip() {
+    for (let list of Object.values(os.networkInterfaces())) {
+        for (let ni of list) {
+            if (ni.family == 'IPv4' && ! ni.internal) return ni.address;
+        }
+    }
+    return null;
+}
+
+/*
+ *  アプリを構築する。リッスンは行わない(呼び出し側で server.listen する)。
+ *  戻り値の listen_host(host, cb) で、対話的に待ち受けアドレスを
+ *  0.0.0.0(局域网開放) / 127.0.0.1(ローカルのみ)へ切り替えられる。
+ */
+function create_app(dist_dir, opts = {}) {
 
     const app = express();
     app.disable('x-powered-by');
@@ -56,8 +78,19 @@ function create_app(dist_dir) {
                              maxAge: 7 * 24 * 60 * 60 * 1000 },
     });
 
+    /* 局域网開放の状態。false なら 127.0.0.1 だけで待ち受ける */
+    const lan = {
+        enabled: opts.lan_default != null ? !! opts.lan_default : true,
+    };
+
     app.use(session_middleware);
     app.use(express.urlencoded({ extended: false, limit: '16kb' }));
+    app.use(express.json({ limit: '1kb' }));
+
+    function redirect_to(req, def) {
+        const to = req.body && String(req.body.to || '');
+        return REDIRECT_PAGES.includes(to) ? to : def;
+    }
 
     /* ゲストログイン。ニックネームだけで入れる(passwd は無視) */
     app.post('/server/auth/', (req, res)=>{
@@ -71,7 +104,15 @@ function create_app(dist_dir) {
                   || crypto.randomUUID(),
             name: name,
         };
-        res.redirect(`${BASE_PATH}/netplay.html`);
+        const to = redirect_to(req, 'netplay.html');
+        res.redirect(`${BASE_PATH}/${to}${to == 'index.html' ? '?netplay=1'
+                                                             : ''}`);
+    });
+
+    /* ログアウト(牌譜画面のフォームから) */
+    app.post('/server/logout', (req, res)=>{
+        req.session.user = null;
+        res.redirect(`${BASE_PATH}/${redirect_to(req, 'netplay.html')}`);
     });
     /* 未実装の外部認証は 404 を返す(クライアントがボタンを隠す) */
 
@@ -84,6 +125,66 @@ function create_app(dist_dir) {
     io.engine.use(session_middleware);
 
     const manager = new RoomManager();
+
+    function lan_url() {
+        const addr = server.address();
+        const ip   = lan_ip();
+        if (! lan.enabled || ! addr || ! ip) return null;
+        return `http://${ip}:${addr.port}${BASE_PATH}/`;
+    }
+
+    /*
+     * 待ち受けアドレスの切り替え。同じポートのまま
+     * close → listen する(session / io インスタンスは維持される)。
+     */
+    function listen_host(host, cb = ()=>{}) {
+
+        const addr = server.address();
+        if (! addr) {                       // まだ listen していない
+            server.listen({ port: 0, host: host }, cb);
+            return;
+        }
+
+        server.closeAllConnections();
+        let done = false;
+        const relisten = ()=>{
+            if (done) return;
+            done = true;
+            server.listen({ port: addr.port, host: host }, cb);
+        };
+        server.close(relisten);
+        setTimeout(relisten, 1000).unref?.();   // 念のための保険
+    }
+
+    /* 局域网開放の状態照会 */
+    app.get('/local/lan', (req, res)=>{
+        res.json({ enabled: lan.enabled, url: lan_url() });
+    });
+
+    /* 局域网開放の切替(ローカルからのみ)。再バインド完了後に応答する */
+    app.post('/local/lan', async (req, res)=>{
+
+        const peer = req.socket.remoteAddress || '';
+        if (! /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(peer)) {
+            return res.status(403).json(
+                        { error: 'ローカルからのみ操作できます' });
+        }
+
+        const enable = !! (req.body && req.body.enabled);
+        if (enable != lan.enabled) {
+            if (manager.has_active()) {
+                return res.status(409).json(
+                    { error: '部屋・対局が有効な間は切り替えられません' });
+            }
+            lan.enabled = enable;
+            const host = enable ? '0.0.0.0' : '127.0.0.1';
+            /* 切替はこの応答を流し切ってから(自分の接続を切らない) */
+            res.json({ enabled: lan.enabled, url: lan_url() });
+            setTimeout(()=>listen_host(host), 200);
+            return;
+        }
+        res.json({ enabled: lan.enabled, url: lan_url() });
+    });
 
     io.on('connection', (sock)=>{
 
@@ -143,15 +244,24 @@ function create_app(dist_dir) {
         }
     });
 
-    return { app, server, io, manager };
+    return { app, server, io, manager,
+             listen_host, lan,
+             get lan_enabled(){ return lan.enabled } };
 }
 
 if (require.main === module) {
+
     const dist_dir = path.join(__dirname, '..', 'dist');
-    const { server } = create_app(dist_dir);
-    server.listen(PORT, ()=>{
+    const lan_default = process.env.LAN_DEFAULT == null
+                      ? true : !! +process.env.LAN_DEFAULT;
+    const { server, lan, listen_host } = create_app(dist_dir,
+                                                    { lan_default });
+    const host = lan.enabled ? '0.0.0.0' : '127.0.0.1';
+    server.listen(PORT, host, ()=>{
+        listen_host.last = host;
         console.log(`電脳麻将ネット対戦サーバー 起動: ` +
-                    `http://localhost:${PORT}${BASE_PATH}/netplay.html`);
+                    `http://localhost:${PORT}${BASE_PATH}/netplay.html ` +
+                    `(局域网: ${lan.enabled ? 'ON' : 'OFF'})`);
     });
 }
 

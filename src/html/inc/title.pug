@@ -8,11 +8,14 @@
   .version ver. #{version}
   .loading Loading data...
   .start.hide(tabindex="0" role="button") START
+  if page == 'index'
+    a.netstart.hide(href="netplay.html") ネット対戦
   if page == 'netplay'
     .login.hide
       form.local(method="POST" action="server/auth/")
         input(name="name" placeholder="プレーヤー名")
         input(name="passwd" value="*" type="hidden")
+        input(name="to" value="netplay.html" type="hidden")
         input(type="submit" value="登録")
       form.hatena(method="POST" action="server/auth/hatena")
         .logo

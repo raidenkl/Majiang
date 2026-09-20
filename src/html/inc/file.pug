@@ -11,6 +11,7 @@
 
     if page == 'index'
       a.start 対局開始
+      a.netstart(href="netplay.html") ネット対戦
     if page == 'netplay'
       .error.hide
       .netplay
@@ -22,6 +23,7 @@
         form.room
           input(type="submit" value="ルーム作成")
         form.logout(method="POST" action="server/logout")
+          input(name="to" value="netplay.html" type="hidden")
           input(type="submit" value="ログアウト")
 
     if page == 'index' || page == 'netplay'

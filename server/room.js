@@ -226,6 +226,15 @@ class RoomManager {
         this.rooms.delete(room.no);
     }
 
+    /* 有効な部屋・対局があるか(局域网切替の禁止判定に使う) */
+    has_active() {
+        for (let room of this.rooms.values()) {
+            if (room.game) return true;
+            if (room.users.some(u => u.online)) return true;
+        }
+        return false;
+    }
+
     destroy_all() {
         for (let room of [...this.rooms.values()]) room.destroy();
     }
