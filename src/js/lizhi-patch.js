@@ -10,9 +10,9 @@
  *
  *  方针: 不修改 node_modules。这里用原型覆写的方式给 Majiang.UI.Player 打补丁，
  *        只需在 src/js/index.js / netplay.js 里 require 本模块即可生效。
- *        (majiang-2.5.3.js 先加载并定义全局 Majiang，index-2.5.3.js 后加载)
+ *        (majiang-2.5.5.js 先加载并定义全局 Majiang，index-2.5.5.js 后加载)
  *
- *  注意: Player 内部使用全局 $ (由 majiang-2.5.3.js 设定的 jQuery 实例)，
+ *  注意: Player 内部使用全局 $ (由 majiang-2.5.5.js 设定的 jQuery 实例)，
  *        本模块也必须使用同一个全局 $，否则 .off() 无法解除对方的处理器。
  */
 "use strict";

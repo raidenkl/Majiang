@@ -74,7 +74,7 @@ npm run dev          # = node server.js ../dist，直接 serve 源 dist 目录
 
 ## 局域网联机（内置对战服务器）
 
-从 v2.5.3 起，桌面版内置了**完整的网络对战服务器**（express + socket.io + Majiang.Game 权威引擎）。
+从 v2.5.5 起，桌面版内置了**完整的网络对战服务器**（express + socket.io + Majiang.Game 权威引擎）。
 双击程序启动后，可以在网页上按以下流程联机：
 
 1. タイトル画面 → 「ネット対戦」→ 「局域网联机」按钮 → **开启**（默认 OFF）
