@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 局域网联机需要联网权限；单机对局完全离线，不依赖它 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="false"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+        android:usesCleartextTraffic="true">
+
+        <!--
+            usesCleartextTraffic: 局域网主机是纯 HTTP（http://192.168.x.x:8080），
+            Android 9 (API 28) 起默认禁止明文流量，必须显式放行。
+
+            screenOrientation=landscape: Web 端的手机布局是靠
+            @media (max-height: 450px) 触发的（src/css/index.styl 里 import "tablet"），
+            也就是横屏那套，所以这里锁横屏。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode|smallestScreenSize"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

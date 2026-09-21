@@ -1,0 +1,78 @@
+plugins {
+    id 'com.android.application'
+}
+
+/*
+ *  版本号从仓库根的 package.json 读，与 Web 端 / 桌面版保持同一个来源。
+ *  versionCode 由 x.y.z 折算：x*10000 + y*100 + z（2.5.5 → 20505）。
+ *  安卓要求 versionCode 单调递增，所以版本号只能往上走。
+ */
+def pkgJson = new groovy.json.JsonSlurper().parse(new File(rootDir, '../package.json'))
+def verName = (pkgJson.version ?: '0.0.0').toString()
+def verNums = verName.tokenize('.').collect { it.replaceAll(/\D.*$/, '') as int }
+def verCode = (verNums[0] ?: 0) * 10000 + (verNums[1] ?: 0) * 100 + (verNums[2] ?: 0)
+
+/*  CI 里如果注入了 ANDROID_KEYSTORE_PATH 就出正式签名的 release 包 */
+def hasKeystore = System.getenv('ANDROID_KEYSTORE_PATH') != null
+
+android {
+    namespace 'com.raidenkl.majiang'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.raidenkl.majiang'
+        minSdk 23
+        targetSdk 34
+        versionCode verCode
+        versionName verName
+    }
+
+    signingConfigs {
+        if (hasKeystore) {
+            release {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
+                storePassword System.getenv('ANDROID_STORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasKeystore) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+/*
+ *  把仓库根目录的 dist/ 复制进 APK 的 assets/www —— 「单机对局」离线用的资源。
+ *  dist/ 是构建产物（未入库），所以每次构建都重新复制一份。
+ */
+def webDist = new File(rootDir, '../dist')
+
+tasks.register('copyWebAssets', Copy) {
+    doFirst {
+        if (! webDist.isDirectory()) {
+            throw new GradleException(
+                "找不到 ${webDist}。请先在仓库根目录执行：npm install && npm run build")
+        }
+    }
+    from(webDist) { into 'www' }
+    into "$projectDir/src/main/assets"
+}
+
+/* 保证在合并 assets 之前把 www 准备好（preBuild + merge*Assets 双保险） */
+tasks.matching {
+    it.name == 'preBuild'
+            || (it.name.startsWith('merge') && it.name.endsWith('Assets'))
+}.configureEach {
+    dependsOn 'copyWebAssets'
+}

@@ -1,0 +1,83 @@
+name: build-apk
+
+# develop / master 有推送就顺手出一个 APK（约几分钟）；
+# 打 tag 时把 APK 追加到该 tag 的 Release 上（与 build-sea.yml 的 Release 合并）。
+on:
+  workflow_dispatch:
+  push:
+    branches: [ 'develop', 'master' ]
+    tags:     [ 'v*' ]
+
+permissions:
+  contents: write          # tag 时把 APK 附到 Release 需要写权限
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) 先建 Web 产物 —— APK 内置的「离线单机」资源就是 dist/
+      #    （dist/ 未入库，必须在这里现场生成）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Build web dist
+        run: |
+          npm ci
+          npm run build
+
+      # 2) Android 工具链
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-34
+            build-tools;34.0.0
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 3) 出包：注入了签名密钥就出 release 包，否则出可直接安装的 debug 包
+      - name: Assemble APK
+        working-directory: android
+        env:
+          KS_B64:                 ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS:      ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD:   ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -eu
+          chmod +x gradlew          # Windows 上提交的脚本没有可执行位
+          if [ -n "${KS_B64:-}" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+            ./gradlew --no-daemon assembleRelease
+            SRC=app/build/outputs/apk/release/app-release.apk
+          else
+            echo "::notice::未配置 ANDROID_KEYSTORE_BASE64，本次出 debug 包（可直接安装）"
+            ./gradlew --no-daemon assembleDebug
+            SRC=app/build/outputs/apk/debug/app-debug.apk
+          fi
+          mkdir -p ../artifact
+          cp "$SRC" ../artifact/Majiang-android.apk
+          ls -l ../artifact
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majiang-android
+          path: artifact/
+
+      # 4) tag 时附到该 tag 的 Release。softprops 在 Release 已存在时是「追加资产」，
+      #    所以和 build-sea.yml 谁先跑完都不冲突。
+      - name: Attach APK to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifact/Majiang-android.apk
