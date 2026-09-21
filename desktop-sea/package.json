@@ -1,6 +1,6 @@
 {
   "name": "majiang-sea",
-  "version": "2.5.3",
+  "version": "2.5.5",
   "description": "電脳麻将 - Node SEA 单文件打包（内嵌完整网络对战服务器，双击即局域网主机）",
   "private": true,
   "scripts": {
