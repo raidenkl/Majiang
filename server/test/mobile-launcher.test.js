@@ -78,3 +78,27 @@ test('Android 工程：漏了必然出问题的关键配置', () => {
     assert.match(gradle, /\.\.\/package\.json/);    // 版本号与 Web 端同源
     assert.match(gradle, /copyWebAssets/);          // dist/ 会被打进 APK
 });
+
+test('Android 工程：签名稳定（可覆盖安装）与 Release 出包', () => {
+
+    /* 固定签名密钥要真的在仓库里，而且二进制没被行尾转换搞坏 */
+    const ks  = path.join(ROOT, 'android/signing/majiang-release.p12');
+    assert.ok(fs.existsSync(ks), '固定签名密钥存在');
+    const buf = fs.readFileSync(ks);
+    assert.equal(buf[0], 0x30, 'PKCS#12 应是 DER SEQUENCE (0x30)');
+    assert.equal(buf[1], 0x82, '长格式长度（2 字节）');
+    assert.equal(buf.readUInt16BE(2) + 4, buf.length,
+                 'DER 里声明的长度应与文件大小一致（防截断/行尾转换破坏）');
+
+    const gradle = fs.readFileSync(
+        path.join(ROOT, 'android/app/build.gradle'), 'utf8');
+    assert.match(gradle, /signing\/majiang-release\.p12/);
+    assert.match(gradle, /storeType\s+'PKCS12'/);
+    assert.match(gradle, /keyAlias\s+ksAlias/);
+    assert.match(gradle, /signingConfig signingConfigs\.release/);
+
+    const wf = fs.readFileSync(
+        path.join(ROOT, '.github/workflows/build-apk.yml'), 'utf8');
+    assert.match(wf, /assembleRelease/);     // CI 出的是 release 包（不再出 debug）
+    assert.match(wf, /apksigner/);           // 出包后核对签名证书
+});

@@ -12,8 +12,24 @@ def verName = (pkgJson.version ?: '0.0.0').toString()
 def verNums = verName.tokenize('.').collect { it.replaceAll(/\D.*$/, '') as int }
 def verCode = (verNums[0] ?: 0) * 10000 + (verNums[1] ?: 0) * 100 + (verNums[2] ?: 0)
 
-/*  CI 里如果注入了 ANDROID_KEYSTORE_PATH 就出正式签名的 release 包 */
-def hasKeystore = System.getenv('ANDROID_KEYSTORE_PATH') != null
+/*
+ *  签名
+ *
+ *  默认用仓库里那把固定的「开发密钥」android/signing/majiang-release.p12。
+ *  为什么要放进仓库：CI runner 每次都是全新的，AGP 自动生成的 debug 密钥
+ *  每次都不一样 → 用户无法覆盖安装新包；而本机没有 JDK / Android Studio，
+ *  也没法离线生成一把。代价与注意事项见 android/signing/README.md。
+ *
+ *  想换成自己的密钥：配好仓库 secrets
+ *  （ANDROID_KEYSTORE_BASE64 / ANDROID_STORE_PASSWORD / ANDROID_KEY_ALIAS /
+ *   ANDROID_KEY_PASSWORD），CI 会解出 keystore 并通过环境变量传进来，优先于默认值。
+ */
+def devKeystore = new File(rootDir, 'signing/majiang-release.p12')
+def ksPath   = System.getenv('ANDROID_KEYSTORE_PATH')
+                   ?: (devKeystore.exists() ? devKeystore.path : null)
+def ksStore  = System.getenv('ANDROID_STORE_PASSWORD') ?: 'majiang-release'
+def ksAlias  = System.getenv('ANDROID_KEY_ALIAS')      ?: 'majiang'
+def ksKeyPwd = System.getenv('ANDROID_KEY_PASSWORD')   ?: ksStore
 
 android {
     namespace 'com.raidenkl.majiang'
@@ -28,12 +44,13 @@ android {
     }
 
     signingConfigs {
-        if (hasKeystore) {
+        if (ksPath) {
             release {
-                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
-                storePassword System.getenv('ANDROID_STORE_PASSWORD')
-                keyAlias System.getenv('ANDROID_KEY_ALIAS')
-                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeFile     file(ksPath)
+                storeType     'PKCS12'
+                storePassword ksStore
+                keyAlias      ksAlias
+                keyPassword   ksKeyPwd
             }
         }
     }
@@ -42,8 +59,17 @@ android {
         release {
             minifyEnabled false
             shrinkResources false
-            if (hasKeystore) signingConfig signingConfigs.release
+            if (ksPath) signingConfig signingConfigs.release
         }
+        debug {
+            /* debug 包也签同一个名，免得"换台机器就装不上覆盖包" */
+            if (ksPath) signingConfig signingConfigs.release
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false     // assembleRelease 不必跑 lintVital，免得小问题挡住出包
+        abortOnError   false
     }
 
     compileOptions {

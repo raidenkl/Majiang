@@ -57,18 +57,25 @@ cd android
 `.github/workflows/build-apk.yml`：`develop` / `master` 有推送就出包，
 `v*` tag 会把 `Majiang-android.apk` 追加到该 tag 的 Release 上。
 
-- 没配签名密钥 → 出 `assembleDebug`（可直接安装）。
-- 配了 → 出正式签名的 `assembleRelease`。需要的 secrets：
-  `ANDROID_KEYSTORE_BASE64`（keystore 的 base64）、`ANDROID_STORE_PASSWORD`、
-  `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
+出包步骤是 `./gradlew assembleRelease`，**默认用仓库里的固定密钥签名**
+（`android/signing/majiang-release.p12`，见该目录的 README），
+所以**每次构建签名一致，用户可以正常覆盖安装**。
+
+如果你在仓库 secrets 里配了
+`ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_ALIAS` /
+`ANDROID_KEY_PASSWORD`，CI 会优先用你的密钥。
+
+出包后会跑 `apksigner verify --print-certs` 并把它打到 run 的 annotation 上，
+方便核对签名是否还是同一把。
 
 ## 已知限制
 
 - **版本号**取自仓库根 `package.json`（`versionCode = x*10000 + y*100 + z`），
   所以只能往上走，不能回退版本号重发。
-- **签名**：不配密钥时用 debug 签名，CI 每次 runner 都是新的，
-  所以**不同次构建的 APK 签名可能不同，覆盖安装会失败（需先卸载）**。
-  想稳定更新就配上面的 secrets。
+- **签名**：用的是仓库里那把**公开的开发密钥**（`android/signing/majiang-release.p12`），
+  好处是任何一次构建签名都一样、能覆盖安装；代价是私钥公开，
+  **不要拿它上架应用商店**。要换成自己的密钥见 `android/signing/README.md`。
+  注意：从旧的 debug 签名包换过来时，**需要先卸载一次**。
 - **IPv6 不支持**：主机的邀请地址一直是 IPv4（见 `server/index.js` 的 `lan_ip()`）。
 - **主机不能是手机**：Android 上跑不了 Node，所以"开房间当主机"必须由 PC 上的
   `電脳麻将.exe`（或任何跑着 `server/` 的机器）来做。
