@@ -116,6 +116,10 @@ module.exports = class YakuVoicePlayer {
         if (! steps || steps.length === 0) return true;
         if (this._playing) return false;
 
+        /* 播报队列打一行日志：真机上「哪些没响」可以直接和它对照 */
+        console.log('[yaku-voice] 演出队列: '
+            + steps.map(s => s.voiceName || '(无声音)').join(' → '));
+
         this._playing = true;
         const gen = ++this._generation;
 
@@ -205,16 +209,33 @@ module.exports = class YakuVoicePlayer {
 
     /**
      * 播放单个语音
+     *
+     * ⚠️ 用完必须释放播放器：Chromium 从 92 起限制每个 tab 的 WebMediaPlayer
+     * 数量(桌面 75，crbug.com/1144736)，超限后新建的 audio 元素 play() 不出声、
+     * 一直停在加载态。以前每次播报都用 Majiang.UI.audio() 克隆新元素且从不清
+     * src，于是演出越靠后的声音越容易哑掉(实测：満貫以上档位语音从未响过、
+     * 宝牌时有时无、靠后的役种也会缺)。现在统一在 finish() 里清 src 触发回收，
+     * 模板元素不受影响，下次仍能克隆出可播的新元素。
      */
     _playVoice(voiceName) {
         // 这个 Promise 只 resolve，不 reject：一条语音失败不应该中断整个队列。
         // 同时用超时兜底，避免 onended 不触发时永久挂起。
         return new Promise((resolve) => {
             let done = false;
+            let audio;
             const finish = (reason) => {
                 if (done) return;
                 done = true;
                 clearTimeout(timer);
+                /* 播放器回收：先摘回调再清 src，避免清理过程回调重入 */
+                if (audio) {
+                    audio.onended = null;
+                    audio.onerror = null;
+                    try {
+                        audio.removeAttribute('src');
+                        audio.load();           // 触发资源/播放器释放
+                    } catch (e) { /* 清理失败不影响演出 */ }
+                }
                 if (reason) console.warn(`[yaku-voice] ${voiceName}: ${reason}`);
                 resolve();
             };
@@ -222,13 +243,21 @@ module.exports = class YakuVoicePlayer {
             const timer = setTimeout(
                 () => finish('timeout (onended 未触发)'), 5000);
 
-            let audio;
             try {
                 audio = this._audio(voiceName);
             } catch (err) {
                 return finish(`音频元素获取失败 - ${err.message}`);
             }
             if (!audio) return finish('音频元素不存在（data-name 未匹配？）');
+
+            /* 音量立即套用（#loaddata 模板上的 volume 属性）。
+             * Majiang.UI.audio() 只在 oncanplaythrough 时才设音量，而
+             * preload="none" 的元素是「先 play() 后加载」＝会以 1.0 播一瞬；
+             * 这里提前设好，音量与预载时代完全一致。 */
+            const volume = audio.getAttribute && audio.getAttribute('volume');
+            if (volume) {
+                try { audio.volume = + volume } catch (e) { /* 非致命 */ }
+            }
 
             audio.onended = () => finish();
             audio.onerror = () => finish(

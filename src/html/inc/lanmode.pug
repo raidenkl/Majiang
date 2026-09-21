@@ -1,0 +1,15 @@
+#lanmode
+  h1
+    img(src="img/logo.png" alt="電脳麻将")
+    |  ネット対戦
+  .version ver. #{version}
+  .panel
+    p.desc
+      | 局域网联机を開くと、同じ LAN 内の他のデバイスから
+      | 邀请链接(招待 URL)で参加できるようになります。
+    button.lan-toggle(type="button") 局域网联机
+    p.state
+    p.invite
+    p.error.hide
+  .proceed-row
+    button.proceed(type="button") 対戦へ進む

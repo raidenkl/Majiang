@@ -70,6 +70,8 @@ body.file
                 display: none
             &.start
                 background: blue
+            &.netstart
+                background: green
             &:hover
                 background: #ccc
             &.delete:hover
@@ -110,6 +112,10 @@ body.file
                 display: inline-block
                 input[name="room_no"]
                     width: 3em
+            form.rename
+                input[name="name"]
+                    width: 8em
+                    vertical-align: middle
         .error
         .loading
             transition: opacity 0.5s ease-out

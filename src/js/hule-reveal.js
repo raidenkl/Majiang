@@ -50,6 +50,13 @@ module.exports = function(audio, storage = 'Majiang.pref') {
 
     const player = new YakuVoicePlayer(audio);
 
+    /* 機械的に流し込まれた和牌(断線復帰時のログ回放など)では演出を出さない。
+     * Board.hule は 400ms 遅延してから dialog.hule() を呼ぶため、
+     * 判定は「抑制期限」で行う —— 一瞬だけ立てるフラグでは 400ms に間に合わない。
+     * 使い方: reveal.suppress(2000)  // 以後 2 秒間は演出しない */
+    let suppressed_until = 0;
+    player.suppress = (ms = 1500) => { suppressed_until = Date.now() + ms };
+
     /* 音效开关。GameCtl 每次切换都会写回 localStorage，播放时读才是当前值。 */
     function isSoundOn() {
         try {
@@ -59,9 +66,11 @@ module.exports = function(audio, storage = 'Majiang.pref') {
         } catch (e) { return true; }
     }
 
-    /* 回放模式判定：index.js 进牌谱再生时给 controller 加 paipu class */
+    /* 回放模式判定：index.js 进牌谱再生时给 controller 加 paipu class、
+     * netplay 的断线复归回放用 suppress() 打抑制期限 */
     function isReplayMode() {
-        return $('#board .controller').hasClass('paipu');
+        return $('#board .controller').hasClass('paipu')
+            || Date.now() < suppressed_until;
     }
 
     /* 満貫以上档位语音 key（不足満貫返回 null）。算法照抄 dialog.js 的显示逻辑 */
@@ -151,6 +160,14 @@ module.exports = function(audio, storage = 'Majiang.pref') {
                         });
         const defenRow = $table.find('tr.r_defen');
 
+        /* 行数与役种数不一致时「显现」会整体错位一格(前几行晚一步、
+         * 最后一行永远不出来)。这里只警告、不中断演出 —— 方便下次
+         * 数据/模板变化时第一时间发现。 */
+        if (hule.hupai && rows.length != hule.hupai.length) {
+            console.warn('[hule-reveal] 役种行数与数据不一致: '
+                + `rows=${rows.length} / hupai=${hule.hupai.length}`);
+        }
+
         // 立即隐藏，之后逐个放出（无语音的行也按节奏出现）
         rows.addClass('hide');
         defenRow.addClass('hide');
@@ -186,6 +203,12 @@ module.exports = function(audio, storage = 'Majiang.pref') {
             return ret;
         };
     });
+
+    /* 便于测试/排查：把「档位语音判定」和「演出步骤组装」暴露出来。
+     * buildSteps 只依赖 rows/defenRow 的 eq()/length/removeClass()，
+     * 用假对象即可在 Node 里单测（见 server/test/hule-reveal.test.js）。 */
+    player.tierVoice  = tierVoice;
+    player.buildSteps = buildSteps;
 
     return player;   // 便于测试/扩展
 };

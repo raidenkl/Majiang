@@ -12,6 +12,8 @@ const { hide, show, fadeIn, scale,
 
 const preset = require('./conf/rule.json');
 
+const initHuleReveal = require('./hule-reveal');   // 雀魂式和牌演出：逐个显现+逐个播报
+
 require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
 
 require('./lizhi-patch');          // 立直の取り消しと待ち牌ヒント
@@ -24,6 +26,9 @@ $(function(){
 
     const pai   = Majiang.UI.pai($('#loaddata'));
     const audio = Majiang.UI.audio($('#loaddata'));
+
+    // 初始化役种语音 + 和牌逐个显现演出（与 index.js / autoplay.js 同一套）
+    const reveal = initHuleReveal(audio);
 
     const analyzer = (kaiju)=>{
         $('body').addClass('analyzer');
@@ -48,42 +53,159 @@ $(function(){
                                             viewer, stat);
     let sock, myuid;
 
+    /* サーバーの START 〜 END の間だけ真。
+     * この間は ROOM ブロードキャスト(誰かの断線/復帰/入退室)で
+     * 部屋画面へ切り替えない —— 対局はサーバー側で続いているため。 */
+    let playing = false;
+
+    /* ---- 局域网联机屏(#lanmode) ---- */
+
+    let lan_state = null;       // { enabled, url, local } / null はサーバー不可
+
+    function update_lan(state) {
+
+        lan_state = state;
+        const toggle = $('#lanmode .lan-toggle');
+        const state_p = $('#lanmode .state');
+        const invite = $('#lanmode .invite');
+        const err    = $('#lanmode .error');
+
+        err.addClass('hide').text('');
+
+        if (! state) {          // 対戦サーバーが見つからない
+            toggle.addClass('hide');
+            state_p.text('対戦サーバーに接続できません');
+            invite.text('');
+            return;
+        }
+
+        /* ゲスト端末(local=false)は待ち受けアドレスを切り替えられない */
+        const is_local = state.local !== false;
+        toggle.toggleClass('hide', ! is_local);
+        toggle.toggleClass('on', !! state.enabled);
+        toggle.text(state.enabled ? '局域网联机:ON'
+                                  : '局域网联机:OFF');
+        state_p.text(! is_local
+                    ? 'この端末は招待リンクから参加しています'
+                      + '(联机の切替はホスト側で行います)'
+                    : state.enabled
+                    ? 'ON:同じ LAN 内のデバイスが招待 URL で参加できます'
+                    : 'OFF:この端末からだけアクセスできます');
+        invite.text(state.url ? `邀请链接 ${state.url}` : '');
+    }
+
+    /* 切替に失敗したときの表示(例:部屋・対局中は 409 で拒否される) */
+    function update_lan_error(msg) {
+        const err = $('#lanmode .error');
+        err.removeClass('hide')
+           .text(msg || '切り替えできませんでした');
+    }
+
+    function show_lanmode() {
+        fetch(`${base}local/lan`).then(res=>res.json())
+            .then(state=>update_lan(state))
+            .catch(()=>update_lan(null));
+        fadeIn($('body').attr('class','lanmode'));
+    }
+
+    function lan_confirmed() {
+        try { return sessionStorage.getItem('Majiang.lan') }
+        catch (e) { return null }
+    }
+
+    /* 「対戦へ進む」:認証状態に応じて牌譜/入室画面かログイン画面へ */
+    function proceed() {
+
+        try { sessionStorage.setItem('Majiang.lan', '1') } catch (e) {}
+
+        if (playing) return;    // 対局中の再接続(HELLO)で牌譜画面を挟まない
+
+        if (myuid) {
+            fadeIn($('body').attr('class','file'));
+            file.redraw();
+        }
+        else {
+            $('body').attr('class','title');
+            show($('#title .login'));
+        }
+    }
+
     function init() {
 
         sock = io('/', { path: `${base}/server/socket.io/`});
 
-        $(window).on('pagehide', ()=>sock.disconnect());
-        $(window).on('pageshow', ()=>sock.connect());
+        $(window).on('pagehide', ()=>{ if (sock) sock.disconnect() });
+        $(window).on('pageshow', ()=>{ if (sock) sock.connect() });
 
         sock.on('HELLO', hello);
         sock.on('ROOM', room);
         sock.on('START', start);
         sock.on('END', end);
-        sock.on('ERROR', file.error);
-        sock.on('disconnect', ()=>hide($('#file .netplay form.room')));
+        sock.on('ERROR', show_error);
+        sock.on('disconnect', ()=>{ playing = false;
+                                    hide($('#file .netplay form.room')) });
+
+        $('#lanmode .lan-toggle').on('click', ()=>{
+            const enable = ! (lan_state && lan_state.enabled);
+            fetch(`${base}local/lan`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ enabled: enable }),
+                })
+                .then(async (res)=>{
+                    let state = {};
+                    try { state = await res.json() } catch (e) { /* 本文なし */ }
+                    if (! res.ok) {         // 409:部屋/対局中など
+                        update_lan_error(state.error);
+                        return;
+                    }
+                    update_lan(state);
+                })
+                .catch(()=>update_lan(null));
+            return false;
+        });
+        $('#lanmode .proceed').on('click', proceed);
 
         hide($('#title .loading'));
+        show_lanmode();
     }
 
     function hello(user) {
-        if (! user) {
-            $('body').attr('class','title');
-            show($('#title .login'));
-            return;
+        if (user) {
+            myuid = user.uid;
+            show($('#file .netplay form'));
+            if (user.icon)
+                $('#file .netplay img').attr('src', user.icon)
+                                       .attr('title', user.uid);
+            $('#file .netplay .name').text(user.name);
+            $('#file .netplay form.rename input[name="name"]')
+                .attr('placeholder', user.name);
+            file.redraw();
         }
-        myuid = user.uid;
-        show($('#file .netplay form'));
-        fadeIn($('body').attr('class','file'));
-        if (user.icon)
-            $('#file .netplay img').attr('src', user.icon)
-                                   .attr('title', user.uid);
-        $('#file .netplay .name').text(user.name);
-        file.redraw();
+        else {
+            myuid = null;
+        }
+        /* LAN 確認済みなら LAN 屏を飛ばして進む */
+        if (lan_confirmed()) proceed();
+    }
+
+    /* サーバーからのエラー表示。牌譜画面(#file)だけでなく部屋画面にも出す。
+     * #file は body.file のときしか表示されないので、部屋画面で
+     * 「対局開始を押しても何も起きない」に見えてしまうため。 */
+    function show_error(msg) {
+        file.error(msg);
+        const err = $('#room .error');
+        if (! err.length) return;
+        err.removeClass('hide').text(msg);
+        clearTimeout(show_error._timer);
+        show_error._timer = setTimeout(()=>hide(err), 5000);
+        err.off('click').on('click', ()=>hide(err));
     }
 
     let row, src;
 
     function room(msg) {
+        if (playing) return;
         if (! row) {
             row = $('#room .user').eq(0);
             src = $('img', row).attr('src');
@@ -132,6 +254,7 @@ $(function(){
 
         $('#board .controller').removeClass('paipu')
         $('body').attr('class','board');
+        playing = true;
         scale($('#board'), $('#space'));
         let seq = 0;
         sock.removeAllListeners('GAME');
@@ -144,10 +267,15 @@ $(function(){
             }
             else if (msg.seq) {
                 if (seq && msg.seq != seq) location.reload();
+                /* 通番は「受信時」に進める。以前は応答コールバックの中で
+                 * 進めていたため、こちらが応答しないままサーバー側の
+                 * 持ち時間切れで対局が進むと(通知メッセージはクリック待ち
+                 * なので普通に起きる)、次の seq で失步判定 → ページ全体が
+                 * location.reload() されてしまっていた。 */
+                seq = msg.seq + 1;
                 player.action(msg, (reply = {})=>{
                     reply.seq = msg.seq;
                     sock.emit('GAME', reply);
-                    seq = msg.seq + 1;
                 });
                 if (msg.jieju) {
                     file.add(msg.jieju, 10);
@@ -156,9 +284,22 @@ $(function(){
             else {
                 player.action(msg);
                 if (msg.kaiju && msg.kaiju.log) {
-                    let log = msg.kaiju.log.pop();
-                    for (let data of log) {
-                        player.action(data);
+                    /* 断線復帰のログ回放。ここに和牌が混ざっていても
+                     * 演出は出さない(目的は盤面の復元) */
+                    if (reveal) reveal.suppress(2000);
+                    /* 開局直後に再接続した場合はログが空配列。
+                     * pop() の戻りが undefined のまま for...of に渡すと
+                     * TypeError でハンドラの残りが実行されなくなる。 */
+                    let log = (msg.kaiju.log || []).pop() || [];
+                    try {
+                        for (let data of log) {
+                            player.action(data);
+                        }
+                    }
+                    catch (e) {
+                        /* 回放が途中で失敗しても後続(未応答メッセージの
+                         * ボタン生成など)を巻き添えにしない */
+                        console.error('[netplay] 棋譜ログの回放に失敗:', e);
                     }
                 }
             }
@@ -167,6 +308,7 @@ $(function(){
     }
 
     function end(paipu) {
+        playing = false;        // 以降の ROOM は部屋画面へ戻す(END の次に来る)
         sock.removeAllListeners('GAME');
         fadeIn($('body').attr('class','file'));
         file.redraw();
@@ -209,12 +351,16 @@ $(function(){
     $(window).on('load', ()=>setTimeout(init, 500));
     if (loaded) $(window).trigger('load');
 
-    $('#title .login form').each(function(){
-        let method = $(this).attr('method')
-        let url    = $(this).attr('action');
-        fetch(url, { method: method, redirect: 'manual' }).then(res =>{
-            if (res.status == 404) hide($(this));
-        });
+    /* 未実装の外部認証(Hatena / Google)だけを探测してボタンを隠す。
+     *  - ローカル登録(server/auth/)は自分たちのサーバーが必ず実装しているので
+     *    探测しない(GET だと 404 で消えてしまう)。
+     *  - 探测は GET で行う。以前はフォームの method(POST)で空 body を投げていたが、
+     *    サーバー側で「名前なしログイン(ななし)」として扱われ、毎回ページを
+     *    読み込むたびにセッションの名前を上書きしてしまっていた。 */
+    $('#title .login form').not('.local').each(function(){
+        fetch($(this).attr('action'), { method: 'GET', redirect: 'manual' })
+            .then(res =>{ if (res.status == 404) hide($(this)) })
+            .catch(()=>{});
     });
 });
 $(window).on('load', ()=> loaded = true);

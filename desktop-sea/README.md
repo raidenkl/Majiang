@@ -71,3 +71,30 @@ npm run dev          # = node server.js ../dist，直接 serve 源 dist 目录
 | `bin.js`    | 复制 node 运行时 + postject 注入（JS API） |
 | `sea-config.json` | SEA 配置（入口 + dist.zip 资产） |
 | `.gitignore` | 忽略构建产物（dist.zip / sea-prep.blob / 可执行文件 / node_modules） |
+
+## 局域网联机（内置对战服务器）
+
+从 v2.5.3 起，桌面版内置了**完整的网络对战服务器**（express + socket.io + Majiang.Game 权威引擎）。
+双击程序启动后，可以在网页上按以下流程联机：
+
+1. タイトル画面 → 「ネット対戦」→ 「局域网联机」按钮 → **开启**（默认 OFF）
+2. 开启后页面显示邀请链接（如 `http://192.168.1.5:8080/`）
+3. 其他设备在浏览器打开该链接 → 同页面入室 → 对局
+4. 空席由 AI 自动补位；掉线时服务器自动代打
+
+局域网开关可在对局空闲时随时关闭（房间存在时不可切换）。
+
+### 端口与防火墙
+
+- 监听端口：`8080`（被占自动退到 8081…8099）
+- 局域网联机关闭时仅监听 `127.0.0.1`，不影响其他使用场景
+- 如需局域网访问，请确保防火墙放行对应端口
+
+### 构建说明（含对战服务器）
+
+```sh
+npm run build:server          # 从仓库根目录：webpack 打包服务器单文件
+cd desktop-sea && npm run build   # 打包 dist.zip → SEA blob → 注入二进制
+```
+
+构建产物 `server-bundle.cjs` 已自动忽略，不进入版本控制。
