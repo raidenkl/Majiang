@@ -12,6 +12,8 @@ const { hide, show, fadeIn, scale,
 
 const preset = require('./conf/rule.json');
 
+const initHuleReveal = require('./hule-reveal');   // 雀魂式和牌演出：逐个显现+逐个播报
+
 require('./paipu-download-fix');   // 牌譜保存のWebView互換レイヤー
 
 require('./lizhi-patch');          // 立直の取り消しと待ち牌ヒント
@@ -24,6 +26,9 @@ $(function(){
 
     const pai   = Majiang.UI.pai($('#loaddata'));
     const audio = Majiang.UI.audio($('#loaddata'));
+
+    // 初始化役种语音 + 和牌逐个显现演出（与 index.js / autoplay.js 同一套）
+    const reveal = initHuleReveal(audio);
 
     const analyzer = (kaiju)=>{
         $('body').addClass('analyzer');
@@ -47,6 +52,11 @@ $(function(){
     const file = new Majiang.UI.PaipuFile($('#file'), 'Majiang.netplay',
                                             viewer, stat);
     let sock, myuid;
+
+    /* サーバーの START 〜 END の間だけ真。
+     * この間は ROOM ブロードキャスト(誰かの断線/復帰/入退室)で
+     * 部屋画面へ切り替えない —— 対局はサーバー側で続いているため。 */
+    let playing = false;
 
     /* ---- 局域网联机屏(#lanmode) ---- */
 
@@ -108,6 +118,8 @@ $(function(){
 
         try { sessionStorage.setItem('Majiang.lan', '1') } catch (e) {}
 
+        if (playing) return;    // 対局中の再接続(HELLO)で牌譜画面を挟まない
+
         if (myuid) {
             fadeIn($('body').attr('class','file'));
             file.redraw();
@@ -129,8 +141,9 @@ $(function(){
         sock.on('ROOM', room);
         sock.on('START', start);
         sock.on('END', end);
-        sock.on('ERROR', file.error);
-        sock.on('disconnect', ()=>hide($('#file .netplay form.room')));
+        sock.on('ERROR', show_error);
+        sock.on('disconnect', ()=>{ playing = false;
+                                    hide($('#file .netplay form.room')) });
 
         $('#lanmode .lan-toggle').on('click', ()=>{
             const enable = ! (lan_state && lan_state.enabled);
@@ -176,9 +189,23 @@ $(function(){
         if (lan_confirmed()) proceed();
     }
 
+    /* サーバーからのエラー表示。牌譜画面(#file)だけでなく部屋画面にも出す。
+     * #file は body.file のときしか表示されないので、部屋画面で
+     * 「対局開始を押しても何も起きない」に見えてしまうため。 */
+    function show_error(msg) {
+        file.error(msg);
+        const err = $('#room .error');
+        if (! err.length) return;
+        err.removeClass('hide').text(msg);
+        clearTimeout(show_error._timer);
+        show_error._timer = setTimeout(()=>hide(err), 5000);
+        err.off('click').on('click', ()=>hide(err));
+    }
+
     let row, src;
 
     function room(msg) {
+        if (playing) return;
         if (! row) {
             row = $('#room .user').eq(0);
             src = $('img', row).attr('src');
@@ -227,6 +254,7 @@ $(function(){
 
         $('#board .controller').removeClass('paipu')
         $('body').attr('class','board');
+        playing = true;
         scale($('#board'), $('#space'));
         let seq = 0;
         sock.removeAllListeners('GAME');
@@ -239,10 +267,15 @@ $(function(){
             }
             else if (msg.seq) {
                 if (seq && msg.seq != seq) location.reload();
+                /* 通番は「受信時」に進める。以前は応答コールバックの中で
+                 * 進めていたため、こちらが応答しないままサーバー側の
+                 * 持ち時間切れで対局が進むと(通知メッセージはクリック待ち
+                 * なので普通に起きる)、次の seq で失步判定 → ページ全体が
+                 * location.reload() されてしまっていた。 */
+                seq = msg.seq + 1;
                 player.action(msg, (reply = {})=>{
                     reply.seq = msg.seq;
                     sock.emit('GAME', reply);
-                    seq = msg.seq + 1;
                 });
                 if (msg.jieju) {
                     file.add(msg.jieju, 10);
@@ -251,9 +284,22 @@ $(function(){
             else {
                 player.action(msg);
                 if (msg.kaiju && msg.kaiju.log) {
-                    let log = msg.kaiju.log.pop();
-                    for (let data of log) {
-                        player.action(data);
+                    /* 断線復帰のログ回放。ここに和牌が混ざっていても
+                     * 演出は出さない(目的は盤面の復元) */
+                    if (reveal) reveal.suppress(2000);
+                    /* 開局直後に再接続した場合はログが空配列。
+                     * pop() の戻りが undefined のまま for...of に渡すと
+                     * TypeError でハンドラの残りが実行されなくなる。 */
+                    let log = (msg.kaiju.log || []).pop() || [];
+                    try {
+                        for (let data of log) {
+                            player.action(data);
+                        }
+                    }
+                    catch (e) {
+                        /* 回放が途中で失敗しても後続(未応答メッセージの
+                         * ボタン生成など)を巻き添えにしない */
+                        console.error('[netplay] 棋譜ログの回放に失敗:', e);
                     }
                 }
             }
@@ -262,6 +308,7 @@ $(function(){
     }
 
     function end(paipu) {
+        playing = false;        // 以降の ROOM は部屋画面へ戻す(END の次に来る)
         sock.removeAllListeners('GAME');
         fadeIn($('body').attr('class','file'));
         file.redraw();

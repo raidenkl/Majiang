@@ -406,6 +406,83 @@ test('1人 + AI 3人で一局完走', { timeout: 300 * 1000 }, async ()=>{
     }
 });
 
+test('通知メッセージには持ち時間(timer)を付けない', { timeout: 120 * 1000 }, async ()=>{
+
+    const { server } = await start_server();
+    try {
+        const base = base_url(server);
+        const a    = await connect(base, 'notice');
+
+        const msgs = [];
+        let jieju  = null;          // 終局サマリ:あえて応答を保留する
+        let ended  = false;
+
+        a.sock.on('GAME', msg=>{
+            msgs.push(msg);
+            if (! msg || ! msg.seq) return;
+            if (msg.jieju) { jieju = msg; return }      // 保留(演出/サマリを見る想定)
+            send(a.sock, 'GAME', { seq: msg.seq });
+        });
+        a.sock.on('END', ()=>{ ended = true });
+
+        const p_room = wait_event(a.sock, 'ROOM');
+        send(a.sock, 'ROOM', 'notice-room');
+        await p_room;
+
+        /* 一局戦 + 持ち時間 3 秒。
+         * 旧実装は limit(3s) + GRACE(2s) で空応答していたので、
+         * 保留していても先へ進んでしまっていた */
+        send(a.sock, 'START', 'notice-room',
+             Majiang.rule({ '場数': 0, '連荘方式': 0 }), [ 3 ]);
+
+        const t0 = Date.now();
+        while (! jieju) {
+            if (Date.now() - t0 > 60 * 1000) assert.fail('jieju が届かない');
+            await new Promise(r=>setTimeout(r, 100));
+        }
+
+        assert.equal(jieju.timer, null,
+                     '終局サマリに持ち時間を載せない(クリック待ちにする)');
+
+        /* 8 秒(> 3s + 2s)保留してもエンジンが進まないこと */
+        await new Promise(r=>setTimeout(r, 8000));
+        assert.equal(ended, false, '保留中に対局が先へ進んでしまった');
+
+        /* 応答すれば終了する */
+        const p_end = wait_event(a.sock, 'END', undefined, 30000);
+        send(a.sock, 'GAME', { seq: jieju.seq });
+        await p_end;
+        assert.equal(ended, true);
+
+        /* kaiju は毎局必ず届くので、通知に timer が無いことは確実に検証できる */
+        let n_notice = 0, n_ask = 0;
+        for (const m of msgs) {
+            if (! m || ! m.seq) continue;
+            const tag = Object.keys(m).filter(k=>k != 'seq' && k != 'timer')
+                                        .join('/');
+            if (m.kaiju || m.hule || m.pingju || m.jieju) {
+                n_notice++;
+                assert.ok(! m.timer, `通知(${tag})に timer が付いている`);
+            }
+            else {
+                n_ask++;
+                assert.ok(m.timer, `判断(${tag})に timer が無い`);
+            }
+        }
+        assert.ok(n_notice >= 2, `通知メッセージを検証した (${n_notice})`);
+        assert.ok(n_ask > 5,     `判断メッセージを検証した (${n_ask})`);
+
+        await close(a.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
 test('人間2人 + AI2人で一局完走(seq は席ごとの連番)', { timeout: 300 * 1000 }, async ()=>{
 
     const { server } = await start_server();
@@ -543,6 +620,221 @@ test('対局中の切断・再接続', { timeout: 120 * 1000 }, async ()=>{
             b.sock.on('GAME', ()=>check());
             check();
         });
+
+        await close(b.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
+test('対局中に他のプレイヤーが切断しても残り席の seq は連番', { timeout: 120 * 1000 }, async ()=>{
+
+    const { server } = await start_server();
+    try {
+        const base = base_url(server);
+        const a    = await connect(base, 'A');
+        const b    = await connect(base, 'B');
+        const ta   = auto_reply_track(a.sock);
+        auto_reply_track(b.sock);
+
+        /* A が部屋を作り B が入室 */
+        const p_a1 = wait_event(a.sock, 'ROOM');
+        send(a.sock, 'ROOM', 'drop-room');
+        await p_a1;
+
+        const p_a2 = wait_event(a.sock, 'ROOM', m => m.user.length == 2);
+        const p_b2 = wait_event(b.sock, 'ROOM', m => m.user.length == 2);
+        send(b.sock, 'ROOM', 'drop-room');
+        await Promise.all([ p_a2, p_b2 ]);
+
+        /* 東風戦(4 局)・持ち時間 5 秒で開始 */
+        let ended = false;
+        a.sock.on('END', ()=>{ ended = true });
+
+        const p_start = wait_event(a.sock, 'START');
+        send(a.sock, 'START', 'drop-room',
+             Majiang.rule({ '場数': 1, '連荘方式': 0 }), [ 5 ]);
+        await p_start;
+
+        /* 何手か進めてから B を切断する。
+         * サーバーは on_member_offline → 部屋の全員へ ROOM をブロードキャストする
+         * (= 本番ではこれで全クライアントが部屋画面へ切り替わっていた)。
+         * プロトコル面では、残った A の牌局が壊れず seq も連番のままであること。 */
+        await wait_event(a.sock, 'GAME', m => m && m.seq && m.seq >= 5, 30000);
+        const seen = ta.seqs.length;
+        b.sock.disconnect();
+
+        /* B の席は以後サーバー側の持ち時間切れで進む(1 手あたり 7 秒)。
+         * A は自分の手番が来るたびに連番のメッセージを受け続ける。 */
+        const t0 = Date.now();
+        while (ta.seqs.length < seen + 3 && ! ended) {
+            if (Date.now() - t0 > 60000) break;
+            await new Promise(r=>setTimeout(r, 100));
+        }
+        const after = ta.seqs.length - seen;
+        assert.ok(after >= 3 || ended,
+                  `B 切断後もメッセージが届く (${after} 件, ended=${ended})`);
+
+        const last = ta.seqs[ta.seqs.length - 1];
+        assert.ok(seen + after == ta.seqs.length);
+        assert.deepEqual(ta.mismatch, [], 'A の seq は連番のまま');
+        assert.deepEqual(ta.seqs, ta.seqs.map((_, i)=>i + 1), 'seq は 1 から連番');
+        assert.ok(last >= seen, `seq は進んでいる (${seen} → ${last})`);
+
+        await close(a.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
+test('再接続で棋譜ログと未応答メッセージを二重適用しない', { timeout: 120 * 1000 }, async ()=>{
+
+    const app = await start_server();
+    const { server } = app;
+    try {
+        const base = base_url(server);
+        const a    = await connect(base, 'dup');
+
+        /* 自分の摸牌待ちを保留したまま切断する。
+         * ハンドラは START より先に登録する(socket.io は同一バッチを
+         * まとめて同期配信するため、後から登録すると取りこぼす)。 */
+        let menfeng = null, held = null;
+        let resolve_kaiju, resolve_held;
+        const p_kaiju = new Promise(r=>resolve_kaiju = r);
+        const p_held  = new Promise(r=>resolve_held  = r);
+
+        a.sock.on('GAME', msg=>{
+            if (! msg) return;
+            if (msg.kaiju) {
+                if (menfeng == null) resolve_kaiju(msg.kaiju);
+                if (msg.seq) send(a.sock, 'GAME', { seq: msg.seq });
+                return;
+            }
+            if (! msg.seq || menfeng == null) return;
+            if (msg.zimo && msg.zimo.l == menfeng && msg.zimo.p != '') {
+                held = msg; resolve_held(); return;     // 応答しない
+            }
+            send(a.sock, 'GAME', { seq: msg.seq });
+        });
+
+        send(a.sock, 'ROOM', 'resume-dup');
+        await wait_event(a.sock, 'ROOM');
+        const p_start = wait_event(a.sock, 'START');
+        send(a.sock, 'START', 'resume-dup',
+             Majiang.rule({ '場数': 0, '連荘方式': 0 }), [ 5 ]);
+        await p_start;
+
+        const kaiju = await p_kaiju;
+        menfeng = (kaiju.id + 4 - kaiju.qijia) % 4;
+        await p_held;
+        assert.ok(held, '自分の摸牌待ちを保留できた');
+
+        a.sock.disconnect();
+        await new Promise(r=>setTimeout(r, 200));
+
+        /* 同一セッションで再接続。クライアントと同じ順で受信する */
+        const got = [];
+        const b = await reconnect_same_session(base, a.cookie, sock=>{
+            sock.on('GAME', msg=>got.push(msg));
+        });
+        assert.equal(b.uid, a.uid, '同一 uid で復帰');
+        await new Promise(r=>setTimeout(r, 600));
+
+        assert.ok(got.find(m=>m.players), '在席情報が届く');
+        const m_kaiju = got.find(m=>m.kaiju);
+        const m_pend  = got.find(m=>m.seq);
+        assert.ok(m_kaiju && m_pend, '開局(棋譜ログ付き)と未応答メッセージが届く');
+
+        const log  = m_kaiju.kaiju.log.pop() || [];
+        const last = log[log.length - 1];
+        const pend = Object.fromEntries(Object.entries(m_pend)
+                            .filter(([ k ])=> ![ 'seq','timer' ].includes(k)));
+
+        /* ① 棋譜ログの末尾に未応答メッセージを残さない
+         *    (残すと回放と再送で同じ局面を 2 回適用してしまう) */
+        assert.notEqual(JSON.stringify(last), JSON.stringify(pend),
+                        '棋譜ログの末尾が未応答メッセージと重複していない');
+
+        /* ② クライアント(src/js/netplay.js)と同じ順でモデルを再構築すると
+         *    サーバーの真値と一致する(以前は手牌が 1 枚多くなっていた) */
+        const p = new Majiang.Player();
+        p.action(m_kaiju);
+        for (const data of log) p.action(data);
+        p.action(m_pend);       // 未応答メッセージは 1 回だけ適用される
+
+        const truth = app.manager.rooms.get('resume-dup').game.game._model;
+        assert.equal(p._model.shoupai[menfeng].toString(),
+                     truth.shoupai[menfeng].toString(), '手牌がサーバーと一致');
+        assert.equal(p._model.shan.paishu, truth.shan.paishu,
+                     '山の残り枚数がサーバーと一致');
+        assert.equal(p._model.he[menfeng]._pai.length,
+                     truth.he[menfeng]._pai.length, '河がサーバーと一致');
+
+        await close(b.sock);
+    }
+    finally {
+        server.closeAllConnections?.();
+        await new Promise(r=>{
+            server.close(r);
+            setTimeout(r, 3000).unref?.();
+        });
+    }
+});
+
+test('再接続で再送される通知には持ち時間(timer)を付けない', { timeout: 60 * 1000 }, async ()=>{
+
+    const { server } = await start_server();
+    try {
+        const base = base_url(server);
+        const a    = await connect(base, 'notice');
+
+        /* 開局通知(kaiju)を保留したまま切断する */
+        let held = null, first = true;
+        let resolve_kaiju, resolve_held;
+        const p_kaiju = new Promise(r=>resolve_kaiju = r);
+        const p_held  = new Promise(r=>resolve_held  = r);
+
+        a.sock.on('GAME', msg=>{
+            if (! msg || ! msg.kaiju) return;
+            if (first) { first = false; resolve_kaiju(msg.kaiju) }
+            if (! msg.seq) return;
+            if (! held) { held = msg; resolve_held(); return }  // 応答しない
+            send(a.sock, 'GAME', { seq: msg.seq });
+        });
+
+        send(a.sock, 'ROOM', 'resume-notice');
+        await wait_event(a.sock, 'ROOM');
+        const p_start = wait_event(a.sock, 'START');
+        send(a.sock, 'START', 'resume-notice',
+             Majiang.rule({ '場数': 0, '連荘方式': 0 }), [ 5 ]);
+        await p_start;
+        await p_held;
+
+        assert.equal(held.timer, null, '通知の初回送信は持ち時間なし');
+
+        a.sock.disconnect();
+        await new Promise(r=>setTimeout(r, 200));
+
+        const got = [];
+        const b = await reconnect_same_session(base, a.cookie, sock=>{
+            sock.on('GAME', msg=>got.push(msg));
+        });
+        await new Promise(r=>setTimeout(r, 600));
+
+        const m_pend = got.find(m=>m.seq);
+        assert.ok(m_pend && m_pend.kaiju, '未応答の通知が再送される');
+        assert.equal(m_pend.timer, null,
+                     '再送でも持ち時間を付けない(クリック待ちの猶予を縮めない)');
 
         await close(b.sock);
     }

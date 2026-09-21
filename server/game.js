@@ -19,6 +19,31 @@ const REPLY_FIELDS  = ['hule', 'daopai', 'dapai', 'gang', 'fulou'];
 const REPLY_MAX_LEN = 40;
 
 /*
+ *  「見るだけ」の通知メッセージ → サーバー側の最低待ち時間(ミリ秒)。
+ *
+ *  これらのメッセージはクライアント側で「クリックして先へ進む」UI
+ *  (UI.Player の action_kaiju / action_hule / action_pingju / action_jieju)
+ *  になる。つまりプレイヤーは演出やサマリを見終わってから応答するので、
+ *  持ち時間のカウントダウン(timer)を付けてはいけない —— 実測では
+ *  timer=[5,0] が届き、5 秒で自動応答して雀魂式和牌演出(役を 1 つずつ
+ *  出す)が途中で打ち切られた。放置対策はここの最低待ち時間で担保する。
+ */
+const NOTICE_WAIT_MS = {
+    kaiju:  15000,      // 局の開始バナー
+    hule:   30000,      // 和牌演出を最後まで見る時間
+    pingju: 30000,
+    jieju:  30000,      // 終局サマリ
+};
+
+/* 通知メッセージなら最低待ち時間、判断を求めるメッセージなら 0 */
+function notice_wait(msg) {
+    for (let key of Object.keys(NOTICE_WAIT_MS)) {
+        if (msg[key] != null) return NOTICE_WAIT_MS[key];
+    }
+    return 0;
+}
+
+/*
  *  クライアントからの応答を UI.Player の語彙に制限する。
  *  余計なフィールドや型はエンジンに渡さず、空応答(パス)に落とす。
  *  値の正当性(ツモ切り `_` や立直 `*` の有無など)はエンジン側で検証され、
@@ -69,16 +94,22 @@ class NetPlayer {
             return;
         }
 
+        /* 通知(見るだけ)は持ち時間を載せず、サーバー側の待ちも長めに取る */
+        const notice  = notice_wait(msg);
         const seq     = ++ this.seq;
+        const wait_ms = Math.max(this.session.limit_ms, notice) + GRACE_MS;
+
         this.pending  = {
             seq:      seq,
             msg:      msg,
             callback: callback,
-            timer:    setTimeout(()=>this.timeout(seq),
-                                  this.session.limit_ms + GRACE_MS),
+            timer:    setTimeout(()=>this.timeout(seq), wait_ms),
         };
-        /* timer フィールドはクライアント側カウントダウン(limit, allowed) */
-        this.send({ seq: seq, timer: this.session.timer_field, ...msg });
+        /* timer フィールドはクライアント側カウントダウン(limit, allowed)。
+         * 通知では null にして「クリックするまで待つ」挙動に戻す。 */
+        this.send({ seq: seq,
+                    timer: notice ? null : this.session.timer_field,
+                    ...msg });
     }
 
     send(msg) {
@@ -219,6 +250,22 @@ class GameSession {
         this.broadcast_players();
 
         const paipu = this.game._paipu;
+
+        /* 棋譜ログは「未応答メッセージを含む」状態で保存されている
+         * (core の add_paipu() は call_players() の直前に必ず呼ばれる)。
+         * 回放してから同じメッセージを再送すると同一局面を二重適用してしまう
+         * —— zimo なら手牌が 15 枚になり、dapai なら
+         * Shoupai.decrease の例外でクライアントのボタンが一切反応しなくなる。
+         * ここでは末尾が未応答メッセージと同種のときだけログから外し、
+         * 直後の再送で 1 回だけ適用させる。
+         * (kaiju / jieju は add_paipu されないので、キーが一致せず何もしない) */
+        const log = JSON.parse(JSON.stringify(paipu.log));
+        const key = player.pending && Object.keys(player.pending.msg)[0];
+        if (key && log.length) {
+            const last = log[log.length - 1];
+            if (last.length && last[last.length - 1][key] != null) last.pop();
+        }
+
         player.send_one(socket, {
             kaiju: {
                 id:     player.id,
@@ -226,14 +273,19 @@ class GameSession {
                 title:  paipu.title,
                 player: paipu.player,
                 qijia:  paipu.qijia,
-                log:    JSON.parse(JSON.stringify(paipu.log)),
+                log:    log,
             },
         });
 
         if (player.pending) {
+            /* 通知(見るだけ)は timer: null のまま送る —— ここで持ち時間を
+             * 載せると、再接続した画面の「クリックして先へ進む」猶予が
+             * 部屋の持ち時間まで縮み、しかも通知はカウントダウンを表示しない
+             * ので、時間切れで勝手に閉じた後にクリックしても無反応になる。 */
+            const notice = notice_wait(player.pending.msg);
             player.send_one(socket, {
                 seq:   player.pending.seq,
-                timer: this.timer_field,
+                timer: notice ? null : this.timer_field,
                 ...player.pending.msg,
             });
         }
@@ -241,4 +293,4 @@ class GameSession {
 }
 
 module.exports = { GameSession, NetPlayer, sanitize_reply,
-                   DEFAULT_LIMIT, GRACE_MS };
+                   DEFAULT_LIMIT, GRACE_MS, NOTICE_WAIT_MS, notice_wait };
